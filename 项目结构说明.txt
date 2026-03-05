@@ -1,0 +1,10 @@
+EPUB_to_MP3_Project/
+│
+├── models.py                  # 【模块1】配置类 + 工具类
+├── epub_processor.py          # 【模块2】EPUB 转 TXT
+├── audio_processor.py         # 【模块3】音频处理函数
+├── main.py                    # 【模块4】主应用类 UI
+├── app.py                     # 【模块5】程序入口
+├── config.json                # 配置文件（自动生成）
+│
+└── 📖 README.md               # 使用说明文档
