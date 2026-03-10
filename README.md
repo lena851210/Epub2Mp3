@@ -412,7 +412,7 @@ ffmpeg -version
 在 `models.py` 中修改 `VOICE_MAPPING`：
 ```python
 VOICE_MAPPING = {
-    "你的标签": "Edge TTS ��音代码",
+    "你的标签": "Edge TTS 语音代码",
 }
 ```
 
