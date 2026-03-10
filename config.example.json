@@ -1,0 +1,12 @@
+{
+  "edge": {
+    "voice_name": "zh-CN-XiaoxiaoNeural",
+    "speed": 1.0,
+    "pitch": 0,
+    "volume": 0
+  },
+  "last_txt_dir": "/Users/【用户名】/【文件夹名】/【文件名】_txt",
+  "merge_audio": true,
+  "target_duration": 40,
+  "words_per_minute": 300
+}

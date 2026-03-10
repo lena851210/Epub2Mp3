@@ -1,1 +1,42 @@
+# ===== Python cache / bytecode =====
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ===== Virtual envs =====
+.venv/
+venv/
+env/
+.conda/
+
+# ===== Test / lint / typecheck caches =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Build artifacts =====
+build/
+dist/
+*.egg-info/
+
+# ===== OS files =====
+.DS_Store
+Thumbs.db
+
+# ===== App outputs (audio/text/temp) =====
+output/
+outputs/
+tmp/
+temp/
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+
+# 如果你会生成中间txt/解压内容，也可以按需忽略：
+*.txt
+*.epub
+
+# ===== User-specific config =====
 config.json
