@@ -188,7 +188,38 @@ class EdgeTTSWrapper:
         self._load_voices_blocking()
         return self.voices
 
+    def _resolve_voice_code(self, voice: str) -> str:
+        """允许 voice 既可以是 UI 标签，也可以直接是 zh-CN-xxxNeural 代码"""
+        if not voice:
+            return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
+        # 1) UI 标签（例如：晓晓(女)）
+        if voice in VOICE_MAPPING:
+            return VOICE_MAPPING[voice]
+        # 2) 直接传入的 voice code（例如：zh-CN-XiaoxiaoNeural）
+        if voice in VOICE_MAPPING.values():
+            return voice
+        if isinstance(voice, str) and re.match(r"^[a-z]{2}-[A-Z]{2}-", voice):
+            return voice
+        return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
+
     def text_to_speech(self, text: str, voice: str, speed: float, pitch: float, volume: float, output_file: str):
+        """文本转语音"""
+        edge_voice = self._resolve_voice_code(voice)
+
+        async def _synth():
+            communicate = edge_tts.Communicate(
+                text, edge_voice,
+                rate=f"{(speed-1)*100:+.0f}%",
+                pitch=f"{pitch:+.0f}Hz",
+                volume=f"{volume:+.0f}%"
+            )
+            await communicate.save(output_file)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_synth())
+        finally:
+            loop.close()
         """文本转语音"""
         edge_voice = VOICE_MAPPING.get(voice, "zh-CN-XiaoxiaoNeural")
         async def _synth():

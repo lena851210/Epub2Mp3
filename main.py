@@ -110,6 +110,22 @@ class AudiobookGenerator:
 
         sliders = ttk.Frame(voice_lf)
         sliders.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        
+        # ===== 语音设置 =====
+        # 显示“实际使用的 voice code”，便于确认 UI 选择是否生效
+
+        self.voice_code_var = tk.StringVar()
+
+        def _update_voice_code(*args):
+            code = VOICE_MAPPING.get(self.voice_var.get(), str(self.voice_var.get()))
+            self.voice_code_var.set(f"实际合成音色代码: {code}")
+
+        self.voice_var.trace_add("write", _update_voice_code)
+        _update_voice_code()
+
+        ttk.Label(voice_lf, textvariable=self.voice_code_var, foreground="#666").grid(
+            row=2, column=0, columnspan=4, sticky="w", pady=(6, 0)
+        )
         for i in range(3):
             sliders.columnconfigure(i, weight=1)
 
@@ -308,9 +324,8 @@ class AudiobookGenerator:
         threading.Thread(target=task, daemon=True).start()
 
     def toggle_merge_options(self):
-        """切换合并选项的启用状态"""
-        state = "normal" if self.merge_var.get() else "disabled"
-        self.target_duration_spin.configure(state=state)
+        """目标时长同时用于：单文件分割 & 合并模式，所以不禁用"""
+        self.target_duration_spin.configure(state="normal")
 
     def select_input_dir(self):
         """选择输入目录"""
@@ -784,7 +799,151 @@ class AudiobookGenerator:
         else:
             self.set_status("所有任务处理完成。")
 
+
+
+
+
+
+
+
+    # ====== 音频生成逻辑 ======
+
     def generate_single_files(self, files: List[str], txt_dir: str, out_dir: str):
+        
+        """单文件转换模式 - 支持长文本分割（分段编号只对同一文件生效）"""
+
+        # 单文件模式：也使用“目标时长”作为分割长度
+        target_minutes = int(self.target_duration_var.get())
+        target_minutes = max(10, min(120, target_minutes))
+
+        for f in files:
+            if self.stop_flag:
+                break
+
+            ipath = os.path.join(txt_dir, f)
+            text = self.read_text_file(ipath)
+            if text is None:
+                self.set_file_status(f, "失败：无法读取文件", spinning=False)
+                self.set_error(f, f"无法读取文件: {ipath}")
+                continue
+
+            text = text.strip()
+            file_duration = self.estimate_duration(text)
+
+            # 超过目标时长就拆分
+            if file_duration > target_minutes:
+                sub_parts = self.split_long_text(text, target_minutes, f)
+                split_total = len(sub_parts)
+
+                for idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
+                    if self.stop_flag:
+                        break
+                    _process_audio_chunk(
+                        text=sub_text,
+                        out_dir=out_dir,
+                        part_num=idx,
+                        file_list=sub_files,
+                        edge_tts_wrapper=self.edge,
+                        voice_var=self.voice_var,
+                        speed_var=self.speed_var,
+                        pitch_var=self.pitch_var,
+                        volume_var=self.volume_var,
+                        set_file_status=self.set_file_status,
+                        set_file_progress=self.set_file_progress,
+                        set_error=self.set_error,
+                        get_mp3_duration_str=self.get_mp3_duration_str,
+                        seconds_to_str=self.seconds_to_str,
+                        stop_flag_check=lambda: self.stop_flag,
+                        tts_with_retry=self.tts_with_retry,
+                        split_total=split_total
+                    )
+            else:
+                _process_audio_chunk(
+                    text=text,
+                    out_dir=out_dir,
+                    part_num=1,
+                    file_list=[f],
+                    edge_tts_wrapper=self.edge,
+                    voice_var=self.voice_var,
+                    speed_var=self.speed_var,
+                    pitch_var=self.pitch_var,
+                    volume_var=self.volume_var,
+                    set_file_status=self.set_file_status,
+                    set_file_progress=self.set_file_progress,
+                    set_error=self.set_error,
+                    get_mp3_duration_str=self.get_mp3_duration_str,
+                    seconds_to_str=self.seconds_to_str,
+                    stop_flag_check=lambda: self.stop_flag,
+                    tts_with_retry=self.tts_with_retry
+                )
+        """单文件转换模式 - 支持长文本分割（分段编号只对同一文件生效）"""
+        for f in files:
+            if self.stop_flag:
+                break
+
+            ipath = os.path.join(txt_dir, f)
+            text = self.read_text_file(ipath)
+            if text is None:
+                self.set_file_status(f, "失败：无法读取文件", spinning=False)
+                self.set_error(f, f"无法读取文件: {ipath}")
+                continue
+
+            text = text.strip()
+            file_duration = self.estimate_duration(text)
+
+            # 超过 60 分钟就拆成多个“目标时长”片段（这里仍用 40）
+            if file_duration > 60:
+                sub_parts = self.split_long_text(text, 40, f)
+                split_total = len(sub_parts)  # 新增：总共切成几段（关键！）
+                for idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
+                    if self.stop_flag:
+                        break
+                    _process_audio_chunk(
+                        text=sub_text,
+                        out_dir=out_dir,
+                        part_num=idx,  # 1,2,3...
+                        file_list=sub_files,
+                        edge_tts_wrapper=self.edge,
+                        voice_var=self.voice_var,
+                        speed_var=self.speed_var,
+                        pitch_var=self.pitch_var,
+                        volume_var=self.volume_var,
+                        set_file_status=self.set_file_status,
+                        set_file_progress=self.set_file_progress,
+                        set_error=self.set_error,
+                        get_mp3_duration_str=self.get_mp3_duration_str,
+                        seconds_to_str=self.seconds_to_str,
+                        stop_flag_check=lambda: self.stop_flag,
+                        tts_with_retry=self.tts_with_retry,
+                        split_total=split_total       # 新增
+                    )
+            else:
+                _process_audio_chunk(
+                    text=text,
+                    out_dir=out_dir,
+                    part_num=1,
+                    file_list=[f],
+                    edge_tts_wrapper=self.edge,
+                    voice_var=self.voice_var,
+                    speed_var=self.speed_var,
+                    pitch_var=self.pitch_var,
+                    volume_var=self.volume_var,
+                    set_file_status=self.set_file_status,
+                    set_file_progress=self.set_file_progress,
+                    set_error=self.set_error,
+                    get_mp3_duration_str=self.get_mp3_duration_str,
+                    seconds_to_str=self.seconds_to_str,
+                    stop_flag_check=lambda: self.stop_flag,
+                    tts_with_retry=self.tts_with_retry
+                    # 不切分就不用传 split_total（默认=1）
+                )
+ 
+ 
+ 
+ 
+ 
+ 
+ 
         """单文件转换模式 - 支持长文本分割"""
         part_num = 1
         for i, f in enumerate(files, 1):
@@ -898,13 +1057,15 @@ class AudiobookGenerator:
 
                 # 将长文本分割为多个部分
                 sub_parts = self.split_long_text(text, target_duration, f)
-                for sub_text, sub_files in sub_parts:
+                split_total = len(sub_parts)   # 新增
+
+                for sub_idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
                     if self.stop_flag:
                         break
                     _process_audio_chunk(
                         text=sub_text,
                         out_dir=out_dir,
-                        part_num=part_num,
+                        part_num=sub_idx,
                         file_list=sub_files,
                         edge_tts_wrapper=self.edge,
                         voice_var=self.voice_var,
@@ -917,7 +1078,8 @@ class AudiobookGenerator:
                         get_mp3_duration_str=self.get_mp3_duration_str,
                         seconds_to_str=self.seconds_to_str,
                         stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry
+                        tts_with_retry=self.tts_with_retry,
+                        split_total=split_total      # 新增
                     )
                     part_num += 1
                 continue
