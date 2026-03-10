@@ -22,6 +22,113 @@ from models import (
 # 全局变量：最后输出目录
 last_output_dir = None
 
+# ====== EPUB->TXT 后处理规则（可调参数） ======
+
+# “看起来像章节标题”的段落（用于把超大章节按内部标题切开）
+CHAPTER_HEADING_RE = re.compile(
+    r"^\s*(第[0-9一二三四五六七八九十百千万零〇两]+[章节回卷篇部].{0,30}|Chapter\s+\d+.*|CHAPTER\s+\d+.*)\s*$"
+)
+
+# 很短的章节，低于这个字数就认为“可能是目录/扉页/空页/碎片”，会尝试合并到下一章
+MIN_CHAPTER_CHARS = 350
+
+# 很短且疑似“噪音页”的标题关键字（只有很短时才丢弃）
+NOISE_TITLE_RE = re.compile(r"(目录|封面|版权|扉页|出版|前言|序|推荐|致谢|引言|插图|图表|索引)", re.IGNORECASE)
+
+
+def _count_chars(s: str) -> int:
+    return len(re.sub(r"\s+", "", s or ""))
+
+
+def split_chapter_by_internal_headings(ch: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    如果一个章节正文中出现多个“第X章/第X节”之类标题段落，则按标题切成多个子章节。
+    """
+    title = (ch.get("title") or "").strip()
+    content = (ch.get("content") or "").strip()
+    hrefs = ch.get("hrefs", []) or []
+
+    if not content:
+        return []
+
+    paras = [p.strip() for p in content.split("\n\n") if p.strip()]
+    if len(paras) < 4:
+        return [ch]
+
+    parts: List[Dict[str, Any]] = []
+    cur_title = title
+    buf: List[str] = []
+
+    # 防止误切：每一段至少要积累一定正文后，遇到新标题才真正切开
+    MIN_BODY_BEFORE_SPLIT = 800
+
+    def flush():
+        nonlocal buf, cur_title
+        txt = normalize_whitespace("\n\n".join(buf).strip())
+        if txt:
+            parts.append({"title": cur_title or title, "content": txt, "hrefs": hrefs[:]})
+        buf = []
+
+    for p in paras:
+        # p 很像一个“章节标题”
+        if CHAPTER_HEADING_RE.match(p) and _count_chars(p) <= 60:
+            # 如果前面积累的正文足够多，才切分
+            if _count_chars("\n\n".join(buf)) >= MIN_BODY_BEFORE_SPLIT:
+                flush()
+                cur_title = p
+                continue
+            else:
+                # 正文还不够就别切，避免标题孤零零一行变成小文件
+                buf.append(p)
+                continue
+
+        buf.append(p)
+
+    flush()
+
+    # 如果没真正切出多个部分，就返回原章节
+    return parts if len(parts) >= 2 else [ch]
+
+
+def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    1) 先把“超大章节”按内部标题拆开
+    2) 再把“过短章节”合并到下一章（或丢弃噪音页）
+    """
+    # 1) 拆分
+    expanded: List[Dict[str, Any]] = []
+    for ch in chapters:
+        expanded.extend(split_chapter_by_internal_headings(ch))
+
+    # 2) 合并/过滤短章节
+    result: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(expanded):
+        ch = expanded[i]
+        title = (ch.get("title") or "").strip()
+        content = (ch.get("content") or "").strip()
+        chars = _count_chars(content)
+
+        # 丢弃：很短 + 标题疑似噪音页（目录/版权等）
+        if chars < 800 and title and NOISE_TITLE_RE.search(title):
+            i += 1
+            continue
+
+        if chars < MIN_CHAPTER_CHARS and i < len(expanded) - 1:
+            # 合并到下一章（保持顺序：把短内容放到下一章开头）
+            nxt = expanded[i + 1]
+            prefix = content
+            if title and title not in prefix:
+                prefix = title + "\n\n" + prefix
+            nxt["content"] = normalize_whitespace((prefix + "\n\n" + (nxt.get("content") or "")).strip())
+            i += 1
+            continue
+
+        result.append(ch)
+        i += 1
+
+    return result
+
 
 # ====== 【函数1】TOC 映射构建 ======
 def build_toc_map(book: epub.EpubBook) -> Dict[str, str]:
@@ -276,7 +383,11 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
 
 
 # ====== 【函数6】EPUB 转 TXT ======
-def convert_epub_to_txt(epub_path: str, progress_callback: Optional[Callable] = None) -> Tuple[str, int, int]:
+def convert_epub_to_txt(
+    epub_path: str,
+    progress_callback: Optional[Callable] = None,
+    max_chars_per_file: int = 12000
+) -> Tuple[str, int, int]:
     """
     将 EPUB 文件转换为 TXT 文件
     
@@ -304,6 +415,9 @@ def convert_epub_to_txt(epub_path: str, progress_callback: Optional[Callable] = 
     if not chapters:
         raise RuntimeError("未能从 EPUB 中提取到任何章节。")
 
+    # 新增：后处理（拆分大章 + 合并/过滤短章）
+    chapters = postprocess_chapters(chapters)
+
     total_chapters = len(chapters)
     converted_count = 0
 
@@ -323,16 +437,17 @@ def convert_epub_to_txt(epub_path: str, progress_callback: Optional[Callable] = 
         if not ch.get("content", "").strip():
             continue
 
-        raw_title = ch.get("title") or f"���{file_counter}章"
+        raw_title = ch.get("title") or f"第{file_counter}章"
         safe_title_for_file = sanitize_filename(raw_title, max_len=60)
 
         content = ch.get("content", "").strip()
-        max_chars_per_file = 50000
 
-        # 如果单个章节超过 50000 字符，拆分成多个文件
+        # 如果单个章节超过 最大字符（现在默认12000），拆分成多个文件
         if len(content) > max_chars_per_file:
+           
             part_num = 1
             start_pos = 0
+            parts_text = []
 
             while start_pos < len(content):
                 end_pos = start_pos + max_chars_per_file
@@ -341,7 +456,7 @@ def convert_epub_to_txt(epub_path: str, progress_callback: Optional[Callable] = 
                 else:
                     # 优先在段落处断开
                     para_end = content.rfind('\n\n', start_pos, end_pos)
-                    if para_end != -1 and para_end > start_pos + max_chars_per_file * 0.7:
+                    if para_end != -1 and para_end > start_pos + int(max_chars_per_file * 0.7):
                         end_pos = para_end + 2
                     else:
                         # 否则在句子处断开
@@ -353,11 +468,25 @@ def convert_epub_to_txt(epub_path: str, progress_callback: Optional[Callable] = 
                             content.rfind('!', start_pos, end_pos),
                             content.rfind('?', start_pos, end_pos)
                         )
-                        if sentence_end != -1 and sentence_end > start_pos + max_chars_per_file * 0.7:
+                        if sentence_end != -1 and sentence_end > start_pos + int(max_chars_per_file * 0.7):
                             end_pos = sentence_end + 1
 
                 part_content = content[start_pos:end_pos].strip()
+                if part_content:
+                    parts_text.append(part_content)
 
+                start_pos = end_pos
+                part_num += 1
+
+            # ===== 新增：尾巴太短就并回上一段 =====
+            # 例如：最后一段 < 25% 上限，就合并到倒数第2段
+            MIN_TAIL = int(max_chars_per_file * 0.25)
+            if len(parts_text) >= 2 and len(parts_text[-1]) < MIN_TAIL:
+                parts_text[-2] = (parts_text[-2].rstrip() + "\n\n" + parts_text[-1].lstrip()).strip()
+                parts_text.pop()
+
+            # ===== 写入 TXT 文件 =====
+            for part_num, part_content in enumerate(parts_text, 1):
                 if part_num == 1:
                     filename = f"{file_counter:03d}-{safe_title_for_file}.txt"
                 else:
@@ -365,6 +494,7 @@ def convert_epub_to_txt(epub_path: str, progress_callback: Optional[Callable] = 
 
                 out_path = os.path.join(out_dir, filename)
 
+                # 第一段去掉重复标题
                 if part_num == 1:
                     part_content = remove_leading_title_from_text(raw_title, part_content)
 
@@ -375,9 +505,6 @@ def convert_epub_to_txt(epub_path: str, progress_callback: Optional[Callable] = 
                     converted_count += 1
                 except Exception as e:
                     print(f"写入失败：{out_path} -> {e}")
-
-                start_pos = end_pos
-                part_num += 1
 
             file_counter += 1
         else:

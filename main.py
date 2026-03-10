@@ -938,74 +938,6 @@ class AudiobookGenerator:
                     # 不切分就不用传 split_total（默认=1）
                 )
  
- 
- 
- 
- 
- 
- 
-        """单文件转换模式 - 支持长文本分割"""
-        part_num = 1
-        for i, f in enumerate(files, 1):
-            if self.stop_flag:
-                break
-            
-            ipath = os.path.join(txt_dir, f)
-            text = self.read_text_file(ipath)
-            if text is None:
-                self.set_file_status(f, "失败：无法读取文件", spinning=False)
-                self.set_error(f, f"无法读取文件: {ipath}")
-                continue
-            
-            text = text.strip()
-            file_duration = self.estimate_duration(text)
-            
-            # 检查是否需要分割
-            if file_duration > 60:  # 超过 60 分钟就分割成 40 分钟的部分
-                sub_parts = self.split_long_text(text, 40, f)
-                for idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
-                    if self.stop_flag:
-                        break
-                    _process_audio_chunk(
-                        text=sub_text,
-                        out_dir=out_dir,
-                        part_num=part_num,
-                        file_list=sub_files,
-                        edge_tts_wrapper=self.edge,
-                        voice_var=self.voice_var,
-                        speed_var=self.speed_var,
-                        pitch_var=self.pitch_var,
-                        volume_var=self.volume_var,
-                        set_file_status=self.set_file_status,
-                        set_file_progress=self.set_file_progress,
-                        set_error=self.set_error,
-                        get_mp3_duration_str=self.get_mp3_duration_str,
-                        seconds_to_str=self.seconds_to_str,
-                        stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry
-                    )
-                    part_num += 1
-            else:
-                _process_audio_chunk(
-                    text=text,
-                    out_dir=out_dir,
-                    part_num=part_num,
-                    file_list=[f],
-                    edge_tts_wrapper=self.edge,
-                    voice_var=self.voice_var,
-                    speed_var=self.speed_var,
-                    pitch_var=self.pitch_var,
-                    volume_var=self.volume_var,
-                    set_file_status=self.set_file_status,
-                    set_file_progress=self.set_file_progress,
-                    set_error=self.set_error,
-                    get_mp3_duration_str=self.get_mp3_duration_str,
-                    seconds_to_str=self.seconds_to_str,
-                    stop_flag_check=lambda: self.stop_flag,
-                    tts_with_retry=self.tts_with_retry
-                )
-                part_num += 1
-
     def generate_merged_files(self, files: List[str], txt_dir: str, out_dir: str):
         """合并模式 - 支持长文本分割"""
         target_duration = self.target_duration_var.get()
@@ -1154,9 +1086,14 @@ class AudiobookGenerator:
             return
         try:
             self.set_status("正在从EPUB提取章节文本…")
+            target_minutes = int(self.target_duration_var.get())
+            wpm = max(1, int(self.wpm_var.get()))
+            max_chars_per_file = target_minutes * wpm  # 例如 40*300=12000
+
             out_dir, converted_count, total_files = convert_epub_to_txt(
                 path,
-                progress_callback=lambda s: self.set_status(f"EPUB：{s}")
+                progress_callback=lambda s: self.set_status(f"EPUB：{s}"),
+                max_chars_per_file=max_chars_per_file
             )
             self.txt_dir.set(out_dir)
             self.config_mgr.set("last_txt_dir", out_dir)
