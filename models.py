@@ -356,9 +356,11 @@ def soup_to_paragraphs(soup: BeautifulSoup) -> str:
     """将 BeautifulSoup 转换为段落文本"""
     body = soup.body if soup.body else soup
     
-    for tag in ("h1","h2","h3","h4","h5","h6"):
-        for h in body.find_all(tag):
-            h.decompose()
+ 
+    # 临时：不移除标题标签（h1~h6）
+    # for tag in ("h1","h2","h3","h4","h5","h6"):
+    #     for h in body.find_all(tag):
+    #         h.decompose()
     
     paras: List[str] = []
     for blk in list(body.find_all(BLOCK_TAGS)):
