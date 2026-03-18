@@ -8,12 +8,20 @@ cd "$PROJECT_DIR"
 echo "=== EPUB2MP3 环境初始化脚本（macOS） ==="
 
 # 1. 选择 Python 解释器
-if command -v python3 >/dev/null 2>&1; then
+#
+# 说明：
+# - Python 3.13+ 移除了标准库 audioop，而 pydub 依赖它，容易报错；
+# - Homebrew 的 Python 有时不包含 _tkinter（GUI 会启动失败）。
+# 因此优先选择已安装的 python3.12（兼容性最好），其次才用 python3。
+if [ -x "/opt/homebrew/bin/python3.12" ]; then
+  PYTHON_BIN="/opt/homebrew/bin/python3.12"
+elif command -v python3 >/dev/null 2>&1; then
   PYTHON_BIN="python3"
 elif command -v python >/dev/null 2>&1; then
   PYTHON_BIN="python"
 else
-  echo "未找到 python3，请先安装 Python 3（推荐从 https://www.python.org 下载 macOS 安装包）。"
+  echo "未找到 Python，请先安装 Python 3。"
+  echo "推荐：从 https://www.python.org/downloads/macos/ 安装官方 macOS 安装包（自带 Tcl/Tk）。"
   exit 1
 fi
 
@@ -42,9 +50,9 @@ fi
 echo "正在升级 pip ..."
 pip install --upgrade pip
 
-# 5. 安装 Python 依赖（Python 3.13+ 需 pyaudioop 替代已移除的 audioop）
-echo "正在安装项目依赖（ebooklib, beautifulsoup4, lxml, pydub, edge-tts, pyaudioop）..."
-pip install "ebooklib" "beautifulsoup4" "lxml" "pydub" "edge-tts" "pyaudioop"
+# 5. 安装 Python 依赖
+echo "正在安装项目依赖（ebooklib, beautifulsoup4, lxml, pydub, edge-tts）..."
+pip install "ebooklib" "beautifulsoup4" "lxml" "pydub" "edge-tts"
 
 echo "依赖安装完成。"
 

@@ -362,7 +362,23 @@ class AudiobookGenerator:
             self.files_info_var.set("当前目录无效")
             return
 
-        files = [f for f in sorted(os.listdir(directory)) if f.lower().endswith(".txt")]
+        all_txt = [f for f in os.listdir(directory) if f.lower().endswith(".txt")]
+
+        def sort_key(fname: str):
+            stem = os.path.splitext(fname)[0].strip()
+            # 支持：
+            # 001 标题
+            # 001-1 标题
+            # 001-标题（也能尽量解析）
+            m = re.match(r"^\s*(\d{1,4})(?:-(\d{1,4}))?[\s_-]*(.*)$", stem)
+            if m:
+                chap = int(m.group(1))
+                part = int(m.group(2)) if m.group(2) else 0  # 不分段的 part=0，会排在最前
+                title = (m.group(3) or "").strip()
+                return (chap, part, title, fname)
+            return (10**9, 0, stem, fname)
+
+        files = sorted(all_txt, key=sort_key)
         if not files:
             self.files_info_var.set("该目录下没有 TXT 文件")
             return
