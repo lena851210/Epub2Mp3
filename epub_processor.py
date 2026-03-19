@@ -606,21 +606,19 @@ def convert_epub_to_txt(
     if not chapters:
         raise RuntimeError("未能从 EPUB 中提取到任何章节。")
 
-    # ✅ 后处理：拆大章、合并/过滤小碎片
+    print("\n===== 原始章节（build_chapters_from_book 后）=====")
+    for i, ch in enumerate(chapters, 1):
+        print(f"{i:03d} | {ch.get('title', '')[:80]}")
+
+    # 后处理：拆大章、合并/过滤小碎片
     chapters = postprocess_chapters(chapters)
 
-    total_chapters = len(chapters)
-    converted_count = 0  # TXT 文件数
+    print("\n===== 后处理章节（postprocess_chapters 后）=====")
+    for i, ch in enumerate(chapters, 1):
+        print(f"{i:03d} | {ch.get('title', '')[:80]}")
 
-    # 处理不完整章节：结尾不像结束符时合并到下一章
-    for idx, ch in enumerate(chapters):
-        content = (ch.get("content", "") or "").strip()
-        if content and not content.endswith(('。', '！', '？', '.', '!', '?')):
-            if idx < len(chapters) - 1:
-                next_ch = chapters[idx + 1]
-                next_content = (next_ch.get("content", "") or "").strip()
-                next_ch["content"] = normalize_whitespace((content + "\n\n" + next_content).strip())
-                ch["content"] = ""
+    total_chapters = len(chapters)
+    converted_count = 0  # 生成的 TXT 文件数
 
     def split_by_limit(content: str, limit: int) -> List[str]:
         """把超长 content 切成多个 part（尽量在段落/句末切）"""
@@ -640,12 +638,12 @@ def convert_epub_to_txt(
                 else:
                     # 否则在句末断开
                     sentence_end = max(
-                        content.rfind('。', start_pos, end_pos),
-                        content.rfind('！', start_pos, end_pos),
-                        content.rfind('？', start_pos, end_pos),
-                        content.rfind('.', start_pos, end_pos),
-                        content.rfind('!', start_pos, end_pos),
-                        content.rfind('?', start_pos, end_pos),
+                        content.rfind("。", start_pos, end_pos),
+                        content.rfind("！", start_pos, end_pos),
+                        content.rfind("？", start_pos, end_pos),
+                        content.rfind(".", start_pos, end_pos),
+                        content.rfind("!", start_pos, end_pos),
+                        content.rfind("?", start_pos, end_pos),
                     )
                     if sentence_end != -1 and sentence_end > start_pos + int(limit * 0.7):
                         end_pos = sentence_end + 1
@@ -660,29 +658,30 @@ def convert_epub_to_txt(
     file_counter = 1  # 章节编号（001/002/003...）
 
     for idx, ch in enumerate(chapters):
-        content = (ch.get("content", "") or "").strip()
+        content = normalize_whitespace((ch.get("content", "") or "").strip())
+        raw_title = (ch.get("title") or "").strip() or f"第{file_counter}章"
+
+        # 调试：空章节也打印出来，避免“章节被悄悄跳过”
         if not content:
+            print(f"跳过空章节: file_counter={file_counter:03d}, 标题={raw_title}")
             continue
 
-        raw_title = (ch.get("title") or "").strip() or f"第{file_counter}章"
+        print(f"写入章节: file_counter={file_counter:03d}, 标题={raw_title}")
         safe_title_for_file = sanitize_filename(raw_title, max_len=60)
-
-        content = normalize_whitespace(content)
 
         # --- 拆分 ---
         if len(content) > max_chars_per_file:
             parts_text = split_by_limit(content, max_chars_per_file)
 
-            # ✅ 尾巴过短就并回上一段（减少很小的最后一段）
-            MIN_TAIL = int(max_chars_per_file * 0.25)
-            if len(parts_text) >= 2 and len(parts_text[-1]) < MIN_TAIL:
+            # 尾巴过短就并回上一段
+            min_tail = int(max_chars_per_file * 0.25)
+            if len(parts_text) >= 2 and len(parts_text[-1]) < min_tail:
                 parts_text[-2] = (parts_text[-2].rstrip() + "\n\n" + parts_text[-1].lstrip()).strip()
                 parts_text.pop()
 
             split_total = len(parts_text)
 
             for part_num, part_content in enumerate(parts_text, 1):
-                # ✅ 命名：分段从 1 开始：001-1 / 001-2 ...
                 filename = (
                     f"{file_counter:03d} {safe_title_for_file}.txt"
                     if split_total <= 1
@@ -690,12 +689,12 @@ def convert_epub_to_txt(
                 )
                 out_path = os.path.join(out_dir, filename)
 
-                # 第一段去掉重复标题
                 if part_num == 1:
                     part_content = remove_leading_title_from_text(raw_title, part_content)
 
                 part_content = remove_redundant_heading_lines(part_content, raw_title)
                 part_content = dedupe_adjacent_paragraphs(part_content, raw_title)
+                part_content = normalize_whitespace(part_content)
 
                 try:
                     with open(out_path, "w", encoding="utf-8") as f:
@@ -716,6 +715,7 @@ def convert_epub_to_txt(
             content2 = remove_leading_title_from_text(raw_title, content)
             content2 = remove_redundant_heading_lines(content2, raw_title)
             content2 = dedupe_adjacent_paragraphs(content2, raw_title)
+            content2 = normalize_whitespace(content2)
 
             try:
                 with open(out_path, "w", encoding="utf-8") as f:
