@@ -1,10 +1,41 @@
-EPUB_to_MP3_Project/
+Epub2Mp3/
 │
-├── models.py                  # 【模块1】配置类 + 工具类
-├── epub_processor.py          # 【模块2】EPUB 转 TXT
-├── audio_processor.py         # 【模块3】音频处理函数
-├── main.py                    # 【模块4】主应用类 UI
-├── app.py                     # 【模块5】程序入口
-├── config.json                # 配置文件（自动生成）
+├── models.py                  # 【模块1】配置管理、字数估算、TTS、文本处理工具
+├── epub_processor.py          # 【模块2】EPUB 解析与 TXT 导出
+├── audio_processor.py         # 【模块3】音频处理底层函数（MP3 生成、分段命名等）
 │
-└── 📖 README.md               # 使用说明文档
+├── generation_manager.py      # 【模块4】音频生成流程控制
+│                              # 负责：
+│                              # - 开始/停止转换
+│                              # - 单文件模式 / 合并模式
+│                              # - 文本按目标时长切分
+│                              # - TTS 重试
+│
+├── file_manager.py            # 【模块5】TXT 文件列表与目录状态管理
+│                              # 负责：
+│                              # - TXT 文件列表加载
+│                              # - 文件选择状态（全选/反选等）
+│                              # - 目录轮询监测
+│                              # - 删除目录 / TXT 后自动刷新界面
+│                              # - 开始转换按钮启用/禁用状态联动
+│
+├── main.py                    # 【模块6】主应用类与 GUI 组装
+│                              # 负责：
+│                              # - 主窗口初始化
+│                              # - create_ui() 界面布局
+│                              # - 试听音频
+│                              # - 导入 EPUB
+│                              # - 打开音频目录
+│                              # - 保存配置 / 关闭程序
+│
+├── app.py                     # 【模块7】程序入口
+│                              # 负责启动 AudiobookGenerator
+│
+├── config.example.json        # 配置示例文件
+├── config.json                # 实际配置文件（运行后自动生成/更新）
+│
+├── README.md                  # 项目使用说明
+├── requirements.txt           # Python 依赖列表
+├── setup_env.sh               # 环境初始化脚本（如有使用）
+│
+└── 项目结构说明.txt            # 当前文件：项目结构与模块职责说明

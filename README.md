@@ -1,625 +1,624 @@
-# 有声书生成工具 (EPUB to MP3)
+可以。最稳的方式是：我直接给你 **“纯 README.md 文件内容”**，前后不夹任何说明。  
+你只需要：
 
-**版本：v1.0 | 语言：Python 3.8+ | 系统：Windows / macOS / Linux**
+1. 在项目根目录新建或打开 `README.md`
+2. 全选清空
+3. 把我下面这整段内容完整粘贴进去
+4. 保存
+
+---
+
+```md
+# Epub2Mp3
+
+本地 GUI 工具：**EPUB → TXT → MP3 有声书生成器**
+
+- **当前版本**：v3.x（持续迭代中）
+- **主要开发环境**：macOS + Python 3.12
+- **GUI**：tkinter
+- **语音引擎**：Microsoft Edge TTS
+- **音频处理**：ffmpeg + pydub
 
 ---
 
 ## 📋 目录
 
 1. [项目概述](#项目概述)
-2. [项目结构](#项目结构)
-3. [安装指南](#安装指南)
-4. [使用说明](#使用说明)
-5. [功能详解](#功能详解)
-6. [常见问题](#常见问题)
-7. [开发者指南](#开发者指南)
+2. [核心设计理念](#核心设计理念)
+3. [项目结构](#项目结构)
+4. [安装指南](#安装指南)
+5. [运行方式](#运行方式)
+6. [使用说明](#使用说明)
+7. [功能说明](#功能说明)
+8. [常见问题](#常见问题)
+9. [开发者说明](#开发者说明)
+10. [版本记录](#版本记录)
 
 ---
 
 ## 📖 项目概述
 
-**有声书生成工具** 是一个一体化解决方案，可以：
+**Epub2Mp3** 是一个面向本地使用的桌面 GUI 工具，目标是把电子书逐步转换成可收听的有声书。
 
-✅ **将 EPUB 电子书转换为 TXT 文本**
-- 智能提取章节和正文
-- 自动清理 HTML 标签和噪音
-- 支持长章节自动拆分
+当前支持的主要流程是：
 
-✅ **将 TXT 文本转换为 MP3 有声书**
-- 使用 Microsoft Edge TTS 进行语音合成
-- 支持 12 种中文语音
-- 可调节语速、音调、音量
+### 1. EPUB → TXT
+- 读取 EPUB 文件
+- 提取章节正文
+- 清理 HTML 标签、脚注、噪音内容
+- 尽量保留章节/小节结构
+- 输出为一组 TXT 文件
 
-✅ **灵活的音频组织**
-- 单文件转换模式
-- 多文件合并模式（按时长组织）
-- 长文本自动分割
+### 2. TXT → MP3
+- 使用 Edge TTS 生成语音
+- 支持多种中文音色
+- 支持语速 / 音调 / 音量调节
+- 支持单文件模式和合并模式
+- 支持按目标时长拆分或合并音频
+
+---
+
+## 🎯 核心设计理念
+
+当前项目采用的是：
+
+# **EPUB → TXT：结构优先**
+# **TXT → MP3：时长优先**
+
+这意味着：
+
+### EPUB 转 TXT 阶段
+重点是尽量保留书籍原本的章节结构，而不是过早按时长切碎文本。
+
+### TXT 转 MP3 阶段
+再根据目标时长决定：
+- 单个 TXT 是否要拆分成多个 MP3
+- 多个 TXT 是否要合并成一个较长 MP3
+
+这种设计的好处是：
+- 文本结构更清楚
+- 后续处理更灵活
+- 更接近真实“先整理文本、再组织音频”的工作流程
 
 ---
 
 ## 📁 项目结构
 
-```
-EPUB_to_MP3_Project/
-├── models.py                  # 【模块1】配置类 + TTS + 文本工具
-├── epub_processor.py          # 【模块2】EPUB 解析 + 转 TXT
-├── audio_processor.py         # 【模块3】文本预处理 + 音频处理
-├── main.py                    # 【模块4】GUI 应用 + 业务逻辑
-├── app.py                     # 【模块5】程序入口
-├── config.json                # 配置文件（自动生成）
-└── README.md                  # 本文件
+当前项目结构如下：
+
+```text
+Epub2Mp3/
+│
+├── models.py                  # 配置管理、字数估算、TTS、文本处理工具
+├── epub_processor.py          # EPUB 解析与 TXT 导出
+├── audio_processor.py         # 音频处理底层函数（MP3 生成、分段命名等）
+│
+├── generation_manager.py      # 音频生成流程控制
+├── file_manager.py            # TXT 文件列表与目录状态管理
+├── main.py                    # 主应用类与 GUI 组装
+├── app.py                     # 程序入口
+│
+├── config.example.json        # 配置示例文件
+├── config.json                # 实际配置文件（运行后自动生成/更新）
+│
+├── requirements.txt           # 依赖列表
+├── setup_env.sh               # 环境初始化脚本（如有使用）
+├── README.md                  # 当前说明文档
+└── 项目结构说明.txt            # 项目结构与模块职责说明
 ```
 
-### 📊 文件功能说明
+---
 
-| 文件 | 行数 | 功能 | 依赖 |
-|------|------|------|------|
-| **models.py** | 230 | 配置管理、字数估算、TTS 语音、文本处理工具 | 无 |
-| **epub_processor.py** | 350 | EPUB 解析、章节提取、HTML 清理、文本转换 | models.py |
-| **audio_processor.py** | 280 | 文本预处理、TTS 合成、MP3 合并 | models.py |
-| **main.py** | 550 | GUI 界面、文件列表、业务逻辑核心 | 前三个模块 |
-| **app.py** | 5 | 程序入口、启动应用 | main.py |
+## 🧩 模块职责说明
 
-### 🔗 模块依赖关系
+### `models.py`
+负责：
+- `ConfigManager`：配置读写
+- `DurationEstimator`：字数与时长估算
+- `EdgeTTSWrapper`：TTS 包装
+- 文本清理与 HTML 处理辅助函数
 
-```
-app.py
-  └── main.py
-        ├── models.py
-        ├── epub_processor.py  ──→ models.py
-        └── audio_processor.py ──→ models.py
-```
+---
+
+### `epub_processor.py`
+负责：
+- 读取 EPUB
+- 解析章节结构
+- 提取正文
+- 清理重复标题、噪音页、目录碎片
+- 导出 TXT 文件
+
+---
+
+### `audio_processor.py`
+负责：
+- 具体音频片段处理
+- TTS 合成后的 MP3 输出
+- 文件命名与底层处理逻辑
+
+---
+
+### `generation_manager.py`
+负责：
+- 开始/停止转换
+- 单文件模式 / 合并模式
+- 长文本按目标时长切分
+- TTS 重试逻辑
+- 整体 MP3 生成流程
+
+---
+
+### `file_manager.py`
+负责：
+- TXT 文件列表加载
+- 全选 / 全不选 / 反选
+- 目录变化轮询监测
+- 外部删除 TXT 目录 / TXT 文件后的自动刷新
+- “开始转换”按钮状态联动
+
+---
+
+### `main.py`
+负责：
+- 主窗口初始化
+- `create_ui()` 界面布局
+- 试听音频
+- 导入 EPUB
+- 打开音频目录
+- 保存配置
+- 关闭程序
+
+---
+
+### `app.py`
+负责：
+- 启动 `AudiobookGenerator`
 
 ---
 
 ## 🛠️ 安装指南
 
-### 前置要求
+## 环境要求
 
-- **Python 3.8+** （推荐 3.10+）
-- **pip** 包管理器
-- **ffmpeg**（用于 MP3 合并）
+当前推荐环境：
 
-### 1️⃣ 检查 Python 版本
+- **macOS**
+- **Python 3.12**
+- **tkinter 可用**
+- **ffmpeg 已安装**
+
+项目当前开发与测试主要围绕上述环境进行。
+
+---
+
+### 1. 检查 Python 版本
 
 ```bash
 python3 --version
-# 输出示例: Python 3.12.7
 ```
 
-### 2️⃣ 安装依赖包
+推荐输出类似：
 
 ```bash
-pip install ebooklib beautifulsoup4 pydub edge-tts
+Python 3.12.x
 ```
 
-验证安装：
+---
+
+### 2. 创建虚拟环境（推荐）
+
 ```bash
-pip list | grep -E "ebooklib|beautifulsoup4|pydub|edge-tts"
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-### 3️⃣ 安装 FFmpeg
+---
 
-**macOS:**
+### 3. 安装依赖
+
+当前项目至少需要这些依赖：
+
+```bash
+pip install ebooklib beautifulsoup4 lxml pydub edge-tts
+```
+
+如果你使用 `requirements.txt`，也可以：
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### 4. 安装 ffmpeg
+
+#### macOS
 ```bash
 brew install ffmpeg
 ```
 
-**Windows:**
-下载安装：https://ffmpeg.org/download.html
+#### Windows
+下载并安装：
+https://ffmpeg.org/download.html
 
-**Linux (Ubuntu/Debian):**
+#### Linux（Debian / Ubuntu）
 ```bash
 sudo apt-get install ffmpeg
 ```
 
-验证安装：
+验证：
+
 ```bash
 ffmpeg -version
 ```
 
-### 4️⃣ 项目文件检查
-
-确保项目文件夹中有：
-- ✅ models.py
-- ✅ epub_processor.py
-- ✅ audio_processor.py
-- ✅ main.py
-- ✅ app.py
-
 ---
 
-## 🚀 使用说明
+### 5. 检查 tkinter
 
-### 快速开始
-
-#### 方式 1：运行 Python 脚本
+在 macOS 下可用性可以用下面命令简单测试：
 
 ```bash
-cd /Users/lilina/GitHub Repositories/Epub2Mp3/
-python3 app.py
+python3 -c "import tkinter; print('tkinter ok')"
 ```
 
-#### 方式 2：在 IDE 中运行
+---
 
-在 PyCharm/VS Code 中打开 `app.py`，点击 **Run**
+## ▶️ 运行方式
+
+在项目目录中执行：
+
+```bash
+python app.py
+```
+
+如果你使用虚拟环境：
+
+```bash
+source .venv/bin/activate
+python app.py
+```
 
 ---
 
-### 界面说明
+## 🖥️ 使用说明
 
-#### 【语音设置】区域
+当前 GUI 流程为：
 
-| 选项 | 说明 | 范围 |
-|------|------|------|
-| **音色** | 选择语音角色（12 种中文语音） | 下拉菜单 |
-| **语速** | 朗读速度倍数 | 0.5x ~ 2.0x |
-| **音调** | 声音高低 | -50Hz ~ +50Hz |
-| **音量** | 音频音量 | -100% ~ +100% |
-| **试听** | 播放试听样本 | 点击按钮 |
+### Step 1：文本准备
+- 导入 EPUB → TXT
+- 查看 TXT 列表
+- 双击 TXT 名称可预览
+- 支持全选 / 全不选 / 反选
 
-#### 【输出设置】区域
+### Step 2：语音设置
+- 选择音色
+- 调整语速、音调、音量
+- 支持试听
 
-| 选项 | 说明 | 备注 |
-|------|------|------|
-| **合并音频** | 启用/禁用多文件合并 | 关闭=单文件模式 |
-| **目标时长** | 单个 MP3 音频长度 | 10~120 分钟 |
-| **TXT目录** | 输入 TXT 文件夹 | 浏览选择 |
+### Step 3：输出设置
+- 选择是否合并音频
+- 设置目标时长
+- 选择 TXT 目录
 
-#### 【源文件】列表
-
-| 列 | 说明 |
-|----|------|
-| ✓ | 选择复选框（点击切换） |
-| TXT名称 | 文件名（双击打开预览） |
-| 大小(KB) | 文件大小 |
-| 字数 | 文本总字数 |
-| 预估时长 | 按当前语速估算的朗读时长 |
-| 状态 | 处理状态（待处理/处理中/已完成等） |
-| 进度 | 处理进度条 |
-
-#### 【按钮】说明
-
-| 按钮 | 功能 |
-|------|------|
-| **【全选】** | 选中所有文件 |
-| **【全不选】** | 取消所有选中 |
-| **【反选】** | 反转选择状态 |
-| **停止** | 中止当前任务 |
-| **导入 EPUB→TXT** | 转换 EPUB 为 TXT |
-| **打开音频目录** | 打开输出文件夹 |
-| **开始转换 🚀** | 开始��成有声书 |
+### 底部操作区
+- 打开音频目录
+- 停止
+- 开始转换
 
 ---
 
-## 📚 功能详解
+## 📚 功能说明
 
-### 功能 1：EPUB 转 TXT
+## 功能 1：导入 EPUB 并生成 TXT
 
-**场景：** 你有一本 EPUB 格式的电子书，想转换为纯文本
+使用方式：
 
-**步骤：**
-
-1. 点击 **【导入 EPUB→TXT】** 按钮
+1. 点击 **“导入 EPUB→TXT”**
 2. 选择 EPUB 文件
-3. 等待转换完成
-4. 系统自动加载生成的 TXT 文件
+3. 程序自动解析并导出 TXT
+4. 自动加载生成后的 TXT 列表
 
-**结果：**
-- 在 EPUB 文件同目录生成 `xxx_txt` 文件夹
-- 每一章节对应一个 TXT 文件
-- 自动清理 HTML 标签、脚注、注释等噪音
-
-**配置说明：**
-```python
-# 在 epub_processor.py 中可调整：
-max_chars_per_file = 50000  # 单个 TXT 最大字数
-# 如果章节超过此值，会自动拆分
-```
+### 当前行为
+- 默认按书本结构导出 TXT
+- 不再默认按目标时长切 TXT
+- 优先保留章节结构
 
 ---
 
-### 功能 2：TXT 转 MP3（单文件模式）
+## 功能 2：TXT 列表管理
 
-**场景：** 将每个 TXT 文件独立转换为 MP3
+支持：
+- 全选
+- 全不选
+- 反选
+- 双击预览文本
+- 自然排序显示文件名
 
-**步骤：**
-
-1. 选择 TXT 文件夹
-2. **取消勾选** "合并音频为长段落"
-3. 勾选要转换的 TXT 文件
-4. 点击 **【开始转换 🚀】**
-5. 等待生成完成
-
-**输出结构：**
-```
-TXT目录/
-├── 001-第一章.txt
-├── 002-第二章.txt
-└── Audio/
-    ├── 001-第一章.mp3
-    ├── 002-第二章.mp3
-    └── ...
-```
-
-**长文本处理：**
-- 如果单个 TXT 超过 60 分钟
-- 自动分割为多个 40 分钟的 MP3
-- 文件名：`001-第一章.mp3`、`001-第一章_p2.mp3`、`001-第一章_p3.mp3`
+例如支持这类命名顺序：
+- `001 标题.txt`
+- `001-1 标题.txt`
+- `002 标题.txt`
 
 ---
 
-### 功能 3：TXT 转 MP3（合并模式）
+## 功能 3：语音试听与参数调整
 
-**场景：** 将多个 TXT 文件合并为少数几个 MP3（按时长组织）
+支持设置：
 
-**步骤：**
+| 选项 | 说明 |
+|------|------|
+| 音色 | 当前可用的 Edge 中文音色 |
+| 语速 | 0.5x ~ 2.0x |
+| 音调 | -50Hz ~ +50Hz |
+| 音量 | -100% ~ +100% |
 
-1. 选择 TXT 文件夹
-2. **勾选** "合并音频为长段落"
-3. 设置目标时长（例：40 分钟）
-4. 勾选要转换的 TXT 文件
-5. 点击 **【开始转换 🚀】**
-6. 等待生成完成
+### 当前特性
+- 只显示当前真正可用的音色
+- 不可用音色不会出现在下拉列表中
+- 可先试听，再开始转换
 
-**示例：**
+---
 
-假设有 3 个 TXT 文件：
-- 第一章：15 分钟
-- 第二章：20 分钟
-- 第三章：25 分钟
-- 目标时长：40 分钟
+## 功能 4：单文件模式
 
-**合并结果：**
-```
+如果不勾选“合并音频为长段落”，则每个 TXT 单独处理。
+
+### 行为
+- 如果单个 TXT 较短，直接生成一个 MP3
+- 如果单个 TXT 过长，则按目标时长切分成多个音频片段
+
+### 命名规则
+- 不分段：`001 章节名.mp3`
+- 分段：`001-1 章节名.mp3`、`001-2 章节名.mp3`
+
+---
+
+## 功能 5：合并模式
+
+如果勾选“合并音频为长段落”，程序会尝试：
+
+- 按顺序读取勾选的 TXT
+- 按目标时长把多个 TXT 合并为较长 MP3
+- 如果某一个 TXT 本身就很长，也会先按时长拆分
+
+---
+
+## 功能 6：目录状态自动检测
+
+当前程序支持对 TXT 目录做轮询检测。
+
+例如：
+- 如果用户在 Finder / 文件管理器中删除了当前 TXT 目录
+- 或删除了目录中的 TXT 文件
+
+程序会在短时间内自动更新界面状态，包括：
+- 清空文件列表
+- 更新提示信息
+- 自动禁用“开始转换”按钮
+
+---
+
+## 功能 7：打开音频目录
+
+点击 **“打开音频目录”** 后，会打开当前 TXT 目录下的：
+
+```text
 Audio/
-├── 001-第一章_到_第二章.mp3    # 35分钟（第一+第二）
-└── 002-第三章.mp3              # 25分钟（第三）
 ```
 
----
-
-### 功能 4：语音参数调整
-
-**步骤：**
-
-1. 在【语音设置】中调整参数
-2. 点击 **【试听】** 预听效果
-3. 满意后点击 **【开始转换】**
-
-**推荐配置：**
-
-| 场景 | 语速 | 音调 | 音量 |
-|------|------|------|------|
-| 标准阅读 | 1.0x | 0Hz | 0% |
-| 快速浏览 | 1.5x | 0Hz | 0% |
-| 舒缓阅读 | 0.8x | -10Hz | +10% |
-| 女性语音 | 1.0x | +5Hz | 0% |
-| 男性语音 | 1.0x | -5Hz | 0% |
-
----
-
-### 功能 5：EPUB 导入与预览
-
-**双击预览文件：**
-- 在【源文件】列表中双击 TXT 文件名
-- 系统会用默认文本编辑器打开文件
-
-**打开音频目录：**
-- 点击 **【打开音频目录 📁】**
-- 直接打开生成的 MP3 文件所在文件夹
+用于查看和试听输出的 MP3 文件。
 
 ---
 
 ## ❓ 常见问题
 
-### Q1：转换很慢，是网络问题吗？
+## Q1：程序启动时提示音色列表获取失败（503）怎么办？
 
-**A：** 不是。Edge TTS 依赖网络，但速度主要取决于：
-- 文本长度（字数越多越慢）
-- 网络速度（稳定的网络更快）
-- 语速设置（语速快的合成速度也快）
+这通常是 Edge TTS 远程服务临时不可用。
 
-**优化建议：**
-- 确保网络稳定（不要用 VPN）
-- 使用默认语速（1.0x）
-- 分割长文本为多个小文件
+### 现象
+终端可能显示类似：
+
+```text
+获取真实可用声音列表失败: 503 Service Unavailable
+```
+
+### 影响
+- 一般不会导致程序完全无法启动
+- 程序通常会回退到本地预设音色标签
+
+### 建议
+- 稍后重试
+- 检查网络连接
+- 不使用不稳定代理
 
 ---
 
-### Q2：为什么没有检测到 ffmpeg？
+## Q2：为什么“开始转换”按钮是灰的？
 
-**A：** ffmpeg 未安装或未加入 PATH
+通常是以下原因之一：
 
-**解决方案：**
+- 当前 TXT 目录无效
+- 当前目录不存在
+- 当前目录中没有 TXT 文件
+- TXT 文件已被外部删除
 
-macOS:
-```bash
-brew install ffmpeg
-```
-
-Windows:
-1. 下载：https://ffmpeg.org/download.html
-2. 解压到 `C:\ffmpeg`
-3. 添加到 PATH（高级系统设置 → 环境变量）
-
-验证：
-```bash
-ffmpeg -version
-```
+这是正常保护行为，避免用户在无有效文本时启动转换。
 
 ---
 
-### Q3：TXT 文件编码问题？
+## Q3：为什么导入 EPUB 后，TXT 目录会自动变化？
 
-**A：** 工具自动处理 UTF-8 编码
+因为程序会把 EPUB 转换结果输出到：
 
-如果某些字符显示错误：
-1. 用文本编辑器打开 TXT 文件
-2. 另存为 **UTF-8 编码**
-3. 重新加载文件列表
+```text
+原EPUB文件名_txt/
+```
+
+然后自动把这个目录设置为当前 TXT 目录，并加载列表。
 
 ---
 
-### Q4：能否只转换某些文件？
+## Q4：音频输出在哪里？
 
-**A：** 可以。在【源文件】列表中：
-- 点击文件名或第一列的 ✓ 符号来选择/取消
-- 使用【全选】【全不选】【反选】按钮
-- 只有勾选的文件才会被转换
+默认在当前 TXT 目录下的：
 
----
-
-### Q5：MP3 文件在哪里？
-
-**A：** 在 TXT 文件夹内的 `Audio` 子文件夹中
-
-例：
-```
-/Users/lilina/Downloads/my_books/
-├── 第一章.txt
-├── 第二章.txt
-└── Audio/              ← MP3 文件在这里
-    ├── 001-第一章.mp3
-    └── 002-第二章.mp3
+```text
+Audio/
 ```
 
-点击 **【打开音频目录 📁】** 可直接打开
+例如：
 
----
-
-### Q6：转换中途出错怎么办？
-
-**A：** 查看【状态】列显示的错误信息
-
-常见错误：
-
-| 错误 | 原因 | 解决 |
-|------|------|------|
-| 网络连接失败 | 网络不稳定 | 检查网络，重试 |
-| ffmpeg 未找到 | ffmpeg 未安装 | 安装 ffmpeg |
-| 文件不存在 | TXT 文件被删除 | 刷新文件列表 |
-| 磁盘空间不足 | 输出目录满 | 清理磁盘空间 |
-
----
-
-### Q7：能否使用其他语音或语言？
-
-**A：** 目前仅支持 12 种中文语音
-
-如需其他语言，需修改代码：
-
-在 `models.py` 中修改 `VOICE_MAPPING`：
-```python
-VOICE_MAPPING = {
-    "你的标签": "Edge TTS 语音代码",
-}
-```
-
-完整语音列表：https://learn.microsoft.com/zh-cn/azure/ai-services/speech-service/language-support?tabs=tts
-
----
-
-## 👨‍💻 开发者指南
-
-### 项目架构
-
-```
-应用入口 (app.py)
-    ↓
-主应用类 (main.py: AudiobookGenerator)
-    ├── EPUB 处理 (epub_processor.py)
-    │   ├── build_chapters_from_book()    # 构建章节
-    │   ├── clean_text_from_html_bytes()  # 清理 HTML
-    │   └── convert_epub_to_txt()         # EPUB→TXT
-    │
-    ├── 音频处理 (audio_processor.py)
-    │   ├── preprocess_text()             # 文本预处理
-    │   └── _process_audio_chunk()        # TTS 合成+合并
-    │
-    └── 工具类 (models.py)
-        ├── ConfigManager                 # 配置管理
-        ├── DurationEstimator             # 时长估算
-        ├── EdgeTTSWrapper                # TTS 包装
-        └── 文本处理函数                   # 工具集
-```
-
-### 关键类和方法
-
-#### ConfigManager（配置管理）
-
-```python
-config_mgr = ConfigManager(CONFIG_FILE)
-
-# 获取配置
-value = config_mgr.get("key", default_value)
-
-# 设置配置
-config_mgr.set("key", value)
-
-# 强制保存
-config_mgr.flush()
-```
-
-#### DurationEstimator（时长估算）
-
-```python
-estimator = DurationEstimator(base_wpm=300)
-
-# 计算字数
-chars = estimator.count_chars("文本内容")
-
-# 估算秒数
-seconds = estimator.estimate_seconds(chars, wpm=300)
-```
-
-#### EdgeTTSWrapper（语音合成）
-
-```python
-tts = EdgeTTSWrapper()
-
-# 获取可用语音
-voices = tts.refresh_voices()
-
-# 文本转语音
-tts.text_to_speech(
-    text="朗读文本",
-    voice="zh-CN-XiaoxiaoNeural",
-    speed=1.0,
-    pitch=0,
-    volume=0,
-    output_file="output.mp3"
-)
-```
-
-### 扩展功能的方式
-
-#### 1. 添加新的语音
-
-在 `models.py` 中修改 `VOICE_MAPPING`：
-```python
-VOICE_MAPPING = {
-    "新语音": "zh-CN-NewVoiceNeural",
-    # ...
-}
-```
-
-#### 2. 修改文本处理规则
-
-在 `models.py` 中编辑这些常量：
-```python
-BLOCK_TAGS = (...)           # HTML 块级标签
-REMOVE_TAGS = (...)          # 要删除的标签
-NOISE_KEYWORDS = (...)       # 噪音关键词
-```
-
-#### 3. 调整时长估算
-
-在 `models.py` 中修改：
-```python
-BASE_WORDS_PER_MINUTE = 300  # 默认朗读速度
-```
-
-#### 4. 修改分段策略
-
-在 `main.py` 中编辑 `generate_single_files()` 和 `generate_merged_files()` 方法
-
-#### 5. 修改 UI 布局
-
-在 `main.py` 中编辑 `create_ui()` 方法
-
-### 常见修改需求
-
-#### 需求：改变默认输出格式
-
-**文件：** `audio_processor.py` 的 `_process_audio_chunk()` 函数
-
-```python
-# 原来：
-opath = os.path.join(out_dir, f"{base_name}.mp3")
-
-# 修改为：
-opath = os.path.join(out_dir, f"{base_name}_voice_{voice_name}.mp3")
-```
-
-#### 需求：修改长文本分割阈值
-
-**文件：** `main.py` 的 `generate_single_files()` 方法
-
-```python
-# 原来：
-if file_duration > 60:  # 超过 60 分钟分割
-
-# 修改为：
-if file_duration > 120:  # 超过 120 分钟分割
-```
-
-#### 需求：修改 TTS 重试次数
-
-**文件：** `main.py` 的 `tts_with_retry()` 方法
-
-```python
-# 原来：
-def tts_with_retry(..., max_retries: int = 3):
-
-# 修改为：
-def tts_with_retry(..., max_retries: int = 5):
+```text
+思考快与慢_txt/
+├── 001 第一章.txt
+├── 002 第二章.txt
+└── Audio/
+    ├── 001 第一章.mp3
+    ├── 002 第二章.mp3
 ```
 
 ---
 
-### 调试技巧
+## Q5：ffmpeg 没安装会怎样？
 
-#### 启用详细日志
+如果没有 ffmpeg：
+- 某些 MP3 处理可能失败
+- 合并、导出等操作可能受影响
 
-在 `main.py` 开头添加：
+建议提前安装并确保命令行可用。
+
+---
+
+## Q6：为什么有时试听失败？
+
+试听依赖：
+- Edge TTS 网络请求
+- 系统播放命令
+- 临时 MP3 文件生成成功
+
+如果失败，优先检查：
+- 网络是否正常
+- `afplay`（macOS）是否可用
+- Edge TTS 服务是否临时异常
+
+---
+
+## 👨‍💻 开发者说明
+
+## 当前架构关系
+
+```text
+app.py
+  └── main.py
+        ├── generation_manager.py
+        ├── file_manager.py
+        ├── epub_processor.py
+        ├── models.py
+        └── audio_processor.py
+```
+
+---
+
+## 当前推荐修改入口
+
+### 如果你要改 EPUB→TXT 解析逻辑
+改：
+
+```text
+epub_processor.py
+```
+
+---
+
+### 如果你要改 TXT 列表、目录刷新、按钮状态
+改：
+
+```text
+file_manager.py
+```
+
+---
+
+### 如果你要改单文件/合并模式、TTS 重试、转换流程
+改：
+
+```text
+generation_manager.py
+```
+
+---
+
+### 如果你要改界面布局和按钮位置
+改：
+
+```text
+main.py
+```
+
+主要关注：
+
 ```python
-import logging
-
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-
-# 然后在代码中使用：
-logger.debug("调试信息")
-logger.info("普通信息")
-logger.warning("警告信息")
-```
-
-#### 测试单个模块
-
-```bash
-# 测试 EPUB 转换
-python3 -c "from epub_processor import convert_epub_to_txt; convert_epub_to_txt('test.epub')"
-
-# 测试 TTS
-python3 -c "from models import EdgeTTSWrapper; tts = EdgeTTSWrapper(); print(tts.voices)"
+create_ui()
 ```
 
 ---
 
-## 📝 版本历史
+### 如果你要改配置、文本清理、TTS 封装
+改：
 
-### v3.0 (2026-03-05)
-- ✅ 完全重构为模块化架构
-- ✅ 修复长文本分割问题
-- ✅ 改进表格选择交互
-- ✅ 优化文件命名规则
-- ✅ 增强代码文档
-
-### v2.0 (之前版本)
-- 单文件架构
-- 基础 EPUB→TXT 功能
-- 基础 TTS 合成
+```text
+models.py
+```
 
 ---
 
-## 📧 技术支持
+## 当前协作建议
 
-如遇到问题：
+如果后续继续和 AI 协作，建议按模块贴代码，而不是总是贴整个项目：
 
-1. **查看【常见问题】部分**
-2. **检查【状态栏】的错误信息**
-3. **查看【错误详情】（右键点击状态列）**
+- UI 问题 → 提供 `main.py`
+- 文件列表 / 目录状态问题 → 提供 `file_manager.py`
+- 转换逻辑问题 → 提供 `generation_manager.py`
+- EPUB 解析问题 → 提供 `epub_processor.py`
+- 配置 / 音色 / 文本工具问题 → 提供 `models.py`
+
+这样准确率会高很多，也更不容易产生“局部替换污染”。
+
+---
+
+## 📝 版本记录
+
+### v3.x
+- EPUB→TXT 改为结构优先
+- TXT→MP3 维持时长优先
+- 修复章节丢失问题
+- 优化标题重复清理
+- 只显示真正可用的音色
+- GUI 布局调整为 Step 1 / Step 2 / Step 3
+- 主流程按钮增强
+- 增加目录自动监测
+- `main.py` 开始拆分为多个模块
+- 新增：
+  - `generation_manager.py`
+  - `file_manager.py`
+
+### 更早版本
+- 基础 EPUB→TXT
+- 基础 TXT→MP3
+- 初版 GUI
+
+---
+
+## 🚧 未来计划
+
+- [ ] 继续拆分 `main.py`（如有必要，可拆出 `ui_manager.py`）
+- [ ] 继续优化 EPUB TOC 叶子章节识别
+- [ ] 进一步减少图题/��明文字误判为标题
+- [ ] 优化更多音频命名细节
+- [ ] 继续提升 macOS 下主按钮视觉体验
+- [ ] 补充更完整的 GitHub 文档与截图
 
 ---
 
@@ -629,16 +628,7 @@ MIT License
 
 ---
 
-## 🎯 未来规划
-
-- [ ] 支持英文和其他语言
-- [ ] 添加更多语音角色
-- [ ] 支持 MOBI、AZW 格式
-- [ ] 增加音频效果调整
-- [ ] Web 界面版本
+如果这个项目对你有帮助，欢迎 Star ⭐
+```
 
 ---
-
-**感谢使用有声书生成工具！** 🎉
-
-Test push on 2026年 3月10日 星期二 11时09分44秒 CST

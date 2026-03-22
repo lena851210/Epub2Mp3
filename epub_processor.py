@@ -24,15 +24,15 @@ last_output_dir = None
 
 # ====== EPUB->TXT 后处理规则（可调参数） ======
 
-# “看起来像章节标题”的段落（用于把超大章节按内部标题切开）
+# "看起来像章节标题"的段落（用于把超大章节按内部标题切开）
 CHAPTER_HEADING_RE = re.compile(
     r"^\s*(第[0-9一二三四五六七八九十百千万零〇两]+[章节回卷篇部].{0,30}|Chapter\s+\d+.*|CHAPTER\s+\d+.*)\s*$"
 )
 
-# 很短的章节，低于这个字数就认为“可能是目录/扉页/空页/碎片”，会尝试合并到下一章
+# 很短的章节，低于这个字数就认为"可能是目录/扉页/空页/碎片"，会尝试合并到下一章
 MIN_CHAPTER_CHARS = 350
 
-# 很短且疑似“噪音页”的标题关键字（只有很短时才丢弃）
+# 很短且疑似"噪音页"的标题关键字（只有很短时才丢弃）
 NOISE_TITLE_RE = re.compile(r"(目录|封面|版权|扉页|出版|前言|序|推荐|致谢|引言|插图|图表|索引)", re.IGNORECASE)
 
 
@@ -42,7 +42,7 @@ def _count_chars(s: str) -> int:
 
 def split_chapter_by_internal_headings(ch: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    如果一个章节正文中出现多个“第X章/第X节”之类标题段落，则按标题切成多个子章节。
+    如果一个章节正文中出现多个"第X章/第X节"之类标题段落，则按标题切成多个子章节。
     """
     title = (ch.get("title") or "").strip()
     content = (ch.get("content") or "").strip()
@@ -70,7 +70,7 @@ def split_chapter_by_internal_headings(ch: Dict[str, Any]) -> List[Dict[str, Any
         buf = []
 
     for p in paras:
-        # p 很像一个“章节标题”
+        # p 很像一个"章节标题"
         if CHAPTER_HEADING_RE.match(p) and _count_chars(p) <= 60:
             # 如果前面积累的正文足够多，才切分
             if _count_chars("\n\n".join(buf)) >= MIN_BODY_BEFORE_SPLIT:
@@ -92,8 +92,8 @@ def split_chapter_by_internal_headings(ch: Dict[str, Any]) -> List[Dict[str, Any
 
 def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    1) 先把“超大章节”按内部标题拆开
-    2) 再把“过短章节”合并到下一章（或丢弃噪音页）
+    1) 先把"超大章节"按内部标题拆开
+    2) 再把"过短章节"合并到下一章（或丢弃噪音页）
     """
     # 1) 拆分
     expanded: List[Dict[str, Any]] = []
@@ -257,24 +257,25 @@ def remove_leading_title_from_text(title: str, text: str) -> str:
 
     return new_text
 
+
 def dedupe_adjacent_paragraphs(text: str, title: str = "", scan_first_n: int = 12) -> str:
     """
     清理紧挨着的重复段落/重复标题行，常见于 EPUB 转 TXT 后出现：
 
-      “第一章 xxxx”
-      “第一章”
+      "第一章 xxxx"
+      "第一章"
 
     这种相邻重复。
 
     规则：
-    1) 相邻段落（以空行分隔）如果“内容相同（忽略空白/部分符号）”，删除后一个
-    2) 在开头 scan_first_n 个段落里，如果出现“只有标题”的段落，删除它
+    1) 相邻段落（以空行分隔）如果"内容相同（忽略空白/部分符号）"，删除后一个
+    2) 在开头 scan_first_n 个段落里，如果出现"只有标题"的段落，删除它
        （因为 TXT 文件本身已经会写 raw_title 在最前面）
     """
     if not text:
         return text
 
-    # 按“段落”切分：连续空行视为分段
+    # 按"段落"切分：连续空行视为分段
     paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
     if not paras:
         return text
@@ -284,7 +285,7 @@ def dedupe_adjacent_paragraphs(text: str, title: str = "", scan_first_n: int = 1
     # 简化比较：去掉空白和常见分隔符
     def _simplify(s: str) -> str:
         s = normalize_whitespace(s).strip()
-        s = re.sub(r"[ \t:：\-_—·\(\)\[\]【】<>《》“”\"'’]+", "", s)
+        s = re.sub(r"[ \t:：\-_—·\(\)\[\]【】<>《》""\"'']+", "", s)
         return s
 
     simp_title = _simplify(norm_title) if norm_title else ""
@@ -299,7 +300,7 @@ def dedupe_adjacent_paragraphs(text: str, title: str = "", scan_first_n: int = 1
         if prev_s is not None and sp == prev_s:
             continue
 
-        # 规则2：开头若出现“只有标题”的段落，删掉
+        # 规则2：开头若出现"只有标题"的段落，删掉
         if simp_title and i < scan_first_n and sp == simp_title:
             continue
 
@@ -308,60 +309,10 @@ def dedupe_adjacent_paragraphs(text: str, title: str = "", scan_first_n: int = 1
 
     return "\n\n".join(cleaned)
 
+
 def remove_redundant_heading_lines(text: str, title: str = "", scan_first_lines: int = 30) -> str:
     """
-    按“行”清理开头重复标题。
-    """
-    if not text:
-        return text
-
-    def simplify(s: str) -> str:
-        s = normalize_whitespace(s).strip()
-        s = re.sub(r"[ \t:：\-_—·\(\)\[\]【】<>《》“”\"'’]+", "", s)
-        s = re.sub(r"第[0-9一二三四五六七八九十百千万零〇两]+([章节回卷篇部])", r"第X\1", s)
-        return s
-
-    def looks_like_heading(line: str) -> bool:
-        ln = (line or "").strip()
-        if not ln or len(ln) > 80:
-            return False
-        if "CHAPTER_HEADING_RE" in globals() and CHAPTER_HEADING_RE.match(ln):
-            return True
-        if len(ln) <= 35 and not any(c in ln for c in "。，；！？.!?") and any(k in ln for k in ("章", "节", "篇", "回", "卷", "部")):
-            return True
-        return False
-
-    title_s = simplify(title) if title else ""
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    result = []
-
-    for i, line in enumerate(lines):
-        ln = line.strip()
-
-        if i < scan_first_lines and ln and looks_like_heading(ln):
-            cur_s = simplify(ln)
-
-            if title_s and (cur_s == title_s or cur_s in title_s or title_s in cur_s):
-                continue
-
-            if result:
-                prev = result[-1].strip()
-                if prev and looks_like_heading(prev):
-                    prev_s = simplify(prev)
-                    if cur_s == prev_s:
-                        continue
-                    if cur_s in prev_s and len(cur_s) < len(prev_s):
-                        continue
-                    if prev_s in cur_s and len(prev_s) < len(cur_s):
-                        result.pop()
-                        result.append(line)
-                        continue
-
-        result.append(line)
-
-    return normalize_whitespace("\n".join(result))
-    """
-    按“行”清理开头重复标题，专门解决这种情况：
+    按"行"清理开头重复标题，专门解决这种情况：
 
         第一章 回答一个更简单的问题
         第一章
@@ -381,8 +332,8 @@ def remove_redundant_heading_lines(text: str, title: str = "", scan_first_lines:
 
     def simplify(s: str) -> str:
         s = normalize_whitespace(s).strip()
-        s = re.sub(r"[ \t:：\-_—·\(\)\[\]【】<>《》“”\"'’]+", "", s)
-        # 把“第九章”“第9章”这类统一成同一种比较形式
+        s = re.sub(r"[ \t:：\-_—·\(\)\[\]【】<>《》""\"'']+", "", s)
+        # 把"第九章""第9章"这类统一成同一种比较形式
         s = re.sub(r"第[0-9一二三四五六七八九十百千万零〇两]+([章节回卷篇部])", r"第X\1", s)
         return s
 
@@ -422,7 +373,7 @@ def remove_redundant_heading_lines(text: str, title: str = "", scan_first_lines:
                     if cur_s == prev_s:
                         continue
 
-                    # 当前是更短的标题，如“第一章”，上一行是“第一章 xxx”
+                    # 当前是更短的标题，如"第一章"，上一行是"第一章 xxx"
                     if cur_s in prev_s and len(cur_s) < len(prev_s):
                         continue
 
@@ -487,14 +438,10 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
 
             title = (current.get("title") or "").strip()
 
-            # 在章节正式入库前，统一清理“标题重复”
+            # 在章节正式入库前，统一清理"标题重复"
             if content:
                 content = remove_leading_title_from_text(title, content)
-                try:
-                    content = remove_redundant_heading_lines(content, title)
-                except NameError:
-                    pass
-
+                content = remove_redundant_heading_lines(content, title)
                 content = dedupe_adjacent_paragraphs(content, title)
                 content = normalize_whitespace(content)
 
@@ -661,7 +608,7 @@ def convert_epub_to_txt(
         content = normalize_whitespace((ch.get("content", "") or "").strip())
         raw_title = (ch.get("title") or "").strip() or f"第{file_counter}章"
 
-        # 调试：空章节也打印出来，避免“章节被悄悄跳过”
+        # 调试：空章节也打印出来，避免"章节被悄悄跳过"
         if not content:
             print(f"跳过空章节: file_counter={file_counter:03d}, 标题={raw_title}")
             continue
