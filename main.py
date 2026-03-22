@@ -85,6 +85,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         style.configure(".", font=base_font)
         style.configure("Treeview.Heading", font=(base_font[0], base_font[1], "bold"))
         style.configure("Treeview", rowheight=28)
+        style.configure("Primary.TButton", font=(base_font[0], base_font[1], "bold"), padding=(12, 7))
 
         main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
         main.grid(row=0, column=0, sticky="nsew")
@@ -129,23 +130,12 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         right_main_action = ttk.Frame(topbar)
         right_main_action.grid(row=0, column=2, sticky="e")
 
-        self.import_epub_btn = tk.Button(
+        self.import_epub_btn = ttk.Button(
             right_main_action,
             text="📘 导入 EPUB→TXT",
             command=self.import_epub,
-            width=18,
-            bg="#1677ff",
-            fg="white",
-            activebackground="#0f5fd7",
-            activeforeground="white",
-            disabledforeground="#dbe8ff",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            font=(base_font[0], base_font[1], "bold"),
-            padx=10,
-            pady=7,
-            cursor="hand2"
+            width=20,
+            style="Primary.TButton"
         )
         self.import_epub_btn.pack(side="right")
 
@@ -211,28 +201,42 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         for i in range(3):
             sliders.columnconfigure(i, weight=1)
 
-        self.voice_code_var = tk.StringVar()
-
-        def _update_voice_code(*args):
-            code = VOICE_MAPPING.get(self.voice_var.get(), str(self.voice_var.get()))
-            self.voice_code_var.set(f"实际合成音色代码: {code}")
-
-        self.voice_var.trace_add("write", _update_voice_code)
-        _update_voice_code()
-
-        ttk.Label(voice_lf, textvariable=self.voice_code_var, foreground="#666").grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
-
-        def make_slider(parent, label_text, var, from_, to, fmt):
+        def make_slider(parent, label_text, var, from_, to, fmt, extra_text_func=None):
             frame = ttk.Frame(parent)
-            label_var = tk.StringVar(value=f"{label_text}: {fmt.format(var.get())}")
+
+            def build_label():
+                base = f"{label_text}: {fmt.format(var.get())}"
+                if extra_text_func:
+                    extra = extra_text_func()
+                    if extra:
+                        base += extra
+                return base
+
+            label_var = tk.StringVar(value=build_label())
             ttk.Label(frame, textvariable=label_var, anchor="w").pack(fill="x")
             scale = ttk.Scale(frame, from_=from_, to=to, variable=var, orient="horizontal")
             scale.pack(fill="x")
-            var.trace_add("write", lambda *args: label_var.set(f"{label_text}: {fmt.format(var.get())}"))
+
+            def refresh_label(*args):
+                label_var.set(build_label())
+
+            var.trace_add("write", refresh_label)
             return frame
 
+        def current_wpm_text():
+            estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * self.speed_var.get()))
+            return f"（约 {estimated_wpm} 字/分钟）"
+
         self.speed_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("speed", 1.0))
-        speed_frame = make_slider(sliders, "语速", self.speed_var, 0.5, 2.0, "{:.2f}x")
+        speed_frame = make_slider(
+            sliders,
+            "语速",
+            self.speed_var,
+            0.5,
+            2.0,
+            "{:.2f}x",
+            extra_text_func=current_wpm_text
+        )
         speed_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10))
 
         self.pitch_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("pitch", 0))
@@ -244,11 +248,9 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         def update_wpm(*args):
             estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * self.speed_var.get()))
             self.wpm_var.set(estimated_wpm)
-            self.wpm_label_var.set(f"估算字数: {estimated_wpm} 字/分钟")
             self.update_all_estimates()
 
         self.wpm_var = tk.IntVar(value=self.config_mgr.get("words_per_minute", BASE_WORDS_PER_MINUTE))
-        self.wpm_label_var = tk.StringVar(value=f"估算字数: {self.wpm_var.get()} 字/分钟")
         self.speed_var.trace_add("write", update_wpm)
 
         # =========================
@@ -258,25 +260,31 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         out_lf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         out_lf.columnconfigure(1, weight=1)
 
-        self.merge_var = tk.BooleanVar(value=self.config_mgr.get("merge_audio", True))
+        self.merge_var = tk.BooleanVar(value=self.config_mgr.get("merge_audio", False))
 
         merge_row = ttk.Frame(out_lf)
         merge_row.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
-        ttk.Checkbutton(
+
+        self.merge_check = ttk.Checkbutton(
             merge_row,
-            text="合并音频为长段落",
+            text="按目标时长合并/拆分TXT",
             variable=self.merge_var,
             command=self.toggle_merge_options
-        ).pack(side="left")
-
-        ttk.Label(merge_row, text="目标时长(分钟):").pack(side="left", padx=(10, 6))
-        self.target_duration_var = tk.IntVar(value=self.config_mgr.get("target_duration", 40))
-        self.target_duration_spin = ttk.Spinbox(
-            merge_row, from_=10, to=120, width=6, textvariable=self.target_duration_var
         )
-        self.target_duration_spin.pack(side="left", padx=(0, 12))
+        self.merge_check.pack(side="left")
 
-        ttk.Label(merge_row, textvariable=self.wpm_label_var).pack(side="left")
+        self.target_row = ttk.Frame(merge_row)
+        ttk.Label(self.target_row, text="目标时长(分钟):").pack(side="left", padx=(12, 6))
+
+        self.target_duration_var = tk.IntVar(value=self.config_mgr.get("target_duration", 30))
+        self.target_duration_spin = ttk.Spinbox(
+            self.target_row,
+            from_=10,
+            to=120,
+            width=6,
+            textvariable=self.target_duration_var
+        )
+        self.target_duration_spin.pack(side="left")
 
         dir_row = ttk.Frame(out_lf)
         dir_row.grid(row=1, column=0, columnspan=4, sticky="ew")
@@ -286,6 +294,9 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.txt_dir = tk.StringVar(value=self.config_mgr.get("last_txt_dir", ""))
         ttk.Entry(dir_row, textvariable=self.txt_dir).grid(row=0, column=1, sticky="ew", padx=(0, 8))
         ttk.Button(dir_row, text="浏览...", command=self.select_input_dir, width=8).grid(row=0, column=2, sticky="e")
+
+        # 初始化 Step 3 显示
+        self.toggle_merge_options(initial=True)
 
         # =========================
         # 底部操作栏
@@ -303,29 +314,17 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         right_btns.grid(row=0, column=1, sticky="e")
         ttk.Button(right_btns, text="停止", command=self.stop_generation, width=10).pack(side="left", padx=(0, 10))
 
-        self.start_btn = tk.Button(
+        self.start_btn = ttk.Button(
             right_btns,
             text="🚀 开始转换",
             command=self.start_generation,
-            width=16,
-            bg="#1677ff",
-            fg="white",
-            activebackground="#0f5fd7",
-            activeforeground="white",
-            disabledforeground="#dbe8ff",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            font=(base_font[0], base_font[1], "bold"),
-            padx=10,
-            pady=7,
-            cursor="hand2"
+            width=18,
+            style="Primary.TButton"
         )
         self.start_btn.pack(side="left")
 
         self.root.bind("<Return>", lambda e: self.start_generation() if str(self.start_btn.cget("state")) != "disabled" else None)
 
-        # 状态栏
         status_bar = ttk.Frame(main)
         status_bar.grid(row=4, column=0, sticky="ew")
         self.status_var = tk.StringVar(value="就绪")
@@ -352,26 +351,9 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             self.set_status("未检测到 ffmpeg，合并/导出可能失败。macOS 可执行: brew install ffmpeg")
 
     def _set_primary_button_state(self, btn, enabled: bool):
-        """设置主按钮启用/禁用视觉状态"""
+        """设置主按钮启用/禁用状态"""
         try:
-            if enabled:
-                btn.configure(
-                    state="normal",
-                    bg="#1677ff",
-                    fg="white",
-                    activebackground="#0f5fd7",
-                    activeforeground="white",
-                    cursor="hand2"
-                )
-            else:
-                btn.configure(
-                    state="disabled",
-                    bg="#9bbcff",
-                    fg="white",
-                    activebackground="#9bbcff",
-                    activeforeground="white",
-                    cursor="arrow"
-                )
+            btn.configure(state=("normal" if enabled else "disabled"))
         except Exception:
             pass
 
@@ -424,6 +406,28 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         except Exception:
             return None
 
+    def get_audio_output_dir(self) -> str:
+        """
+        根据当前 TXT 目录，计算音频输出目录。
+        规则：
+        - 如果 TXT 目录名以 _txt 结尾，则同级生成 _Audio 目录
+        - 否则退化为在 TXT 目录同级生成 “原目录名_Audio”
+        """
+        txt_dir = self.txt_dir.get().strip()
+        if not txt_dir:
+            return ""
+
+        txt_dir = os.path.abspath(txt_dir)
+        parent_dir = os.path.dirname(txt_dir)
+        txt_basename = os.path.basename(txt_dir)
+
+        if txt_basename.endswith("_txt"):
+            audio_basename = txt_basename[:-4] + "_Audio"
+        else:
+            audio_basename = txt_basename + "_Audio"
+
+        return os.path.join(parent_dir, audio_basename)
+
     def refresh_voices(self):
         """刷新语音列表"""
         def task():
@@ -443,9 +447,23 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         import threading
         threading.Thread(target=task, daemon=True).start()
 
-    def toggle_merge_options(self):
-        """目标时长同时用于：单文件分割 & 合并模式，所以不禁用"""
-        self.target_duration_spin.configure(state="normal")
+    def toggle_merge_options(self, initial: bool = False):
+        """控制目标时长设置的显示/隐藏"""
+        if self.merge_var.get():
+            if not self.target_row.winfo_ismapped():
+                self.target_row.pack(side="left")
+        else:
+            if self.target_row.winfo_ismapped():
+                self.target_row.pack_forget()
+
+        if not initial:
+            self.update_idletasks()
+
+    def update_idletasks(self):
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
 
     def select_input_dir(self):
         """选择输入目录"""
@@ -573,13 +591,17 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         threading.Thread(target=worker, daemon=True).start()
 
     def open_output_dir(self):
-        """打开输出目录"""
-        txt_dir = self.txt_dir.get()
+        """打开输出音频目录"""
+        txt_dir = self.txt_dir.get().strip()
         if not txt_dir or not os.path.isdir(txt_dir):
             messagebox.showerror("错误", "请先选择有效的TXT目录")
             return
 
-        out_dir = os.path.join(txt_dir, "Audio")
+        out_dir = self.get_audio_output_dir()
+        if not out_dir:
+            messagebox.showerror("错误", "无法确定音频输出目录")
+            return
+
         os.makedirs(out_dir, exist_ok=True)
 
         if platform.system() == "Darwin":

@@ -8,6 +8,9 @@ import re
 import tkinter as tk
 import platform
 import subprocess
+import threading
+
+from audio_processor import find_existing_outputs_for_txt
 
 
 class FileManagerMixin:
@@ -149,7 +152,10 @@ class FileManagerMixin:
             pass
 
     def load_file_list(self, directory: str):
-        """加载 TXT 文件列表"""
+        """快速加载 TXT 文件列表；音频存在性检查异步进行，避免界面卡顿"""
+        self._load_token = getattr(self, "_load_token", 0) + 1
+        load_token = self._load_token
+
         for iid in self.files_tree.get_children():
             self.files_tree.delete(iid)
 
@@ -189,6 +195,12 @@ class FileManagerMixin:
             self._refresh_dir_snapshot()
             return
 
+        # 重置“正在异步检查”状态
+        self._audio_check_running = True
+        self._audio_check_total = len(files)
+        self._audio_check_done = 0
+
+        # 第一步：先快速显示列表，不做耗时音频检查
         for idx, fname in enumerate(files):
             full_path = os.path.join(directory, fname)
 
@@ -205,32 +217,140 @@ class FileManagerMixin:
             est_str = self.estimate_duration_str(chars)
 
             iid = fname
-            self.selection_states[iid] = True
 
-            check_mark = "✓" if self.selection_states[iid] else ""
+            # 初始状态：未决定是否勾选
+            self.selection_states[iid] = False
+
+            check_mark = ""
             tag = "oddrow" if idx % 2 else "evenrow"
 
             self.files_tree.insert(
                 "", "end", iid=iid,
-                values=(check_mark, fname, size_str, str(chars), est_str, "待处理", ""),
+                values=(check_mark, fname, size_str, str(chars), est_str, "检查中...", ""),
                 tags=(tag,)
             )
 
-        self.update_selection_info()
+        # 顶部先显示“检查中”
+        self.files_info_var.set(f"正在检查音频状态 0/{len(files)} ...")
         self.update_action_buttons_state()
         self._refresh_dir_snapshot()
 
+        # 先把界面渲染出来，再异步扫描
+        self.root.after(50, lambda: self._start_async_audio_status_check(directory, files, load_token))
+
+    def _start_async_audio_status_check(self, directory: str, files, load_token: int):
+        """启动后台线程，异步检查哪些 TXT 已有正式音频"""
+        def worker():
+            try:
+                out_dir = ""
+                try:
+                    out_dir = self.get_audio_output_dir()
+                except Exception:
+                    out_dir = ""
+
+                total = len(files)
+
+                for idx, fname in enumerate(files, 1):
+                    if load_token != getattr(self, "_load_token", None):
+                        return
+
+                    existing_outputs = []
+                    status_text = "待处理"
+                    is_selected = True
+
+                    try:
+                        existing_outputs = find_existing_outputs_for_txt(out_dir, fname) if out_dir else []
+                        if existing_outputs:
+                            if len(existing_outputs) == 1:
+                                status_text = "✅ 已存在"
+                            else:
+                                status_text = f"已存在({len(existing_outputs)}段)"
+                            is_selected = False
+                        else:
+                            status_text = "待处理"
+                            is_selected = True
+                    except Exception:
+                        status_text = "待处理"
+                        is_selected = True
+
+                    self.root.after(
+                        0,
+                        lambda f=fname, st=status_text, sel=is_selected, i=idx, t=total, token=load_token:
+                            self._apply_audio_check_result(f, st, sel, i, t, token)
+                    )
+
+                self.root.after(
+                    0,
+                    lambda token=load_token: self._finish_async_audio_status_check(token)
+                )
+
+            except Exception:
+                self.root.after(
+                    0,
+                    lambda token=load_token: self._finish_async_audio_status_check(token)
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_audio_check_result(self, iid: str, status_text: str, is_selected: bool, idx: int, total: int, token: int):
+        """把后台检查结果应用到界面"""
+        if token != getattr(self, "_load_token", None):
+            return
+
+        if not self.files_tree.exists(iid):
+            return
+
+        self.selection_states[iid] = is_selected
+        check_mark = "✓" if is_selected else ""
+
+        current_values = self.files_tree.item(iid, "values")
+        if not current_values or len(current_values) < 7:
+            return
+
+        new_values = (
+            check_mark,
+            current_values[1],
+            current_values[2],
+            current_values[3],
+            current_values[4],
+            status_text,
+            current_values[6]
+        )
+        self.files_tree.item(iid, values=new_values)
+
+        self._audio_check_done = idx
+        self.files_info_var.set(f"正在检查音频状态 {idx}/{total} ...")
+
+    def _finish_async_audio_status_check(self, token: int):
+        """结束异步音频状态检查"""
+        if token != getattr(self, "_load_token", None):
+            return
+
+        self._audio_check_running = False
+        self.update_selection_info()
+        self.update_action_buttons_state()
+        self.set_status("TXT 列表已加载")
+
     def _on_tree_click(self, event):
-        """点击表格行切换选择状态"""
+        """点击表格：只允许点击第一列切换勾选，其他列仅正常选中行"""
         row = self.files_tree.identify_row(event.y)
         col = self.files_tree.identify_column(event.x)
-        if not row or not col:
+        region = self.files_tree.identify_region(event.x, event.y)
+
+        if not row or not col or region != "cell":
             return
-        if col in ("#1", "#2"):
+
+        if col == "#1":
             self._toggle_selection(row)
+            return "break"
+
+        return
 
     def _toggle_selection(self, iid: str):
-        """切换单个文件的选择状态"""
+        """切换单���文件的选择状态"""
+        if not self.files_tree.exists(iid):
+            return
+
         self.selection_states[iid] = not self.selection_states.get(iid, False)
         check_mark = "✓" if self.selection_states[iid] else ""
         current_values = self.files_tree.item(iid, "values")
@@ -272,7 +392,14 @@ class FileManagerMixin:
         """更新选择信息"""
         total = len(self.selection_states)
         selected = sum(1 for v in self.selection_states.values() if v)
-        self.files_info_var.set(f"已选择 {selected}/{total} 个文件")
+
+        # 检查过程中显示“正在检查...”
+        if getattr(self, "_audio_check_running", False):
+            done = getattr(self, "_audio_check_done", 0)
+            total_check = getattr(self, "_audio_check_total", total)
+            self.files_info_var.set(f"正在检查音频状态 {done}/{total_check} ...")
+        else:
+            self.files_info_var.set(f"已选择 {selected}/{total} 个文件")
 
     def select_all_files(self):
         """全选"""
@@ -305,10 +432,12 @@ class FileManagerMixin:
         region = self.files_tree.identify_region(event.x, event.y)
         if region != "cell":
             return
+
         col = self.files_tree.identify_column(event.x)
         row = self.files_tree.identify_row(event.y)
         if not row:
             return
+
         if col == "#2":
             path = os.path.join(self.txt_dir.get(), row)
             self.open_text_preview(path)

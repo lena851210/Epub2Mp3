@@ -9,7 +9,7 @@ import threading
 from typing import List, Tuple, Optional
 from tkinter import messagebox
 
-from audio_processor import _process_audio_chunk
+from audio_processor import _process_audio_chunk, find_existing_outputs_for_txt
 
 
 class GenerationMixin:
@@ -196,7 +196,11 @@ class GenerationMixin:
             self.root.after(0, lambda: messagebox.showerror("错误", "请选择有效的TXT目录"))
             return
 
-        out_dir = os.path.join(txt_dir, "Audio")
+        out_dir = self.get_audio_output_dir()
+        if not out_dir:
+            self.root.after(0, lambda: messagebox.showerror("错误", "无法确定音频输出目录"))
+            return
+
         os.makedirs(out_dir, exist_ok=True)
 
         files = self.get_selected_files()
@@ -206,9 +210,9 @@ class GenerationMixin:
             return
 
         if not self.merge_var.get():
-            self.generate_single_files(files, txt_dir, out_dir)
+            self.generate_plain_files(files, txt_dir, out_dir)
         else:
-            self.generate_merged_files(files, txt_dir, out_dir)
+            self.generate_smart_by_target(files, txt_dir, out_dir)
 
         if self.stop_flag:
             for f in files:
@@ -217,7 +221,67 @@ class GenerationMixin:
                     self.set_file_status(f, "已中断", spinning=False)
             self.set_status("任务已中断。")
         else:
-            self.set_status("所有任务处理完成。")
+            self.set_status(f"所有任务处理完成。输出目录：{out_dir}")
+
+    def generate_plain_files(self, files: List[str], txt_dir: str, out_dir: str):
+        """普通模式：每个 TXT 直接输出一个 MP3，不做按目标时长拆分/合并"""
+        for f in files:
+            if self.stop_flag:
+                break
+
+            existing_outputs = find_existing_outputs_for_txt(out_dir, f)
+            if existing_outputs:
+                if len(existing_outputs) == 1:
+                    dur = self.get_mp3_duration_str(existing_outputs[0])
+                    self.set_file_status(f, f"已存在(时长{dur})" if dur else "已存在", spinning=False)
+                else:
+                    self.set_file_status(f, f"已存在({len(existing_outputs)}段)", spinning=False)
+                self.set_file_progress(f, 100.0)
+                continue
+
+            ipath = os.path.join(txt_dir, f)
+            text = self.read_text_file(ipath)
+            if text is None:
+                self.set_file_status(f, "失败：无法读取文件", spinning=False)
+                self.set_error(f, f"无法读取文件: {ipath}")
+                continue
+
+            text = text.strip()
+            if not text:
+                self.set_file_status(f, "跳过：空文本", spinning=False)
+                self.set_file_progress(f, 100.0)
+                continue
+
+            _process_audio_chunk(
+                text=text,
+                out_dir=out_dir,
+                part_num=1,
+                file_list=[f],
+                edge_tts_wrapper=self.edge,
+                voice_var=self.voice_var,
+                speed_var=self.speed_var,
+                pitch_var=self.pitch_var,
+                volume_var=self.volume_var,
+                set_file_status=self.set_file_status,
+                set_file_progress=self.set_file_progress,
+                set_error=self.set_error,
+                get_mp3_duration_str=self.get_mp3_duration_str,
+                seconds_to_str=self.seconds_to_str,
+                stop_flag_check=lambda: self.stop_flag,
+                tts_with_retry=self.tts_with_retry,
+                split_total=1
+            )
+
+    def generate_smart_by_target(self, files: List[str], txt_dir: str, out_dir: str):
+        """智能模式：按目标时长进行拆分/合并"""
+        if not self.merge_var.get():
+            self.generate_plain_files(files, txt_dir, out_dir)
+            return
+
+        # 仍沿用你原来的逻辑：
+        # - merge_var=True 时走“合并模式”
+        # - 单个文件太长时仍会拆分
+        self.generate_merged_files(files, txt_dir, out_dir)
 
     def generate_single_files(self, files: List[str], txt_dir: str, out_dir: str):
         """单文件转换模式 - 按目标时长分割"""
@@ -227,6 +291,16 @@ class GenerationMixin:
         for f in files:
             if self.stop_flag:
                 break
+
+            existing_outputs = find_existing_outputs_for_txt(out_dir, f)
+            if existing_outputs:
+                if len(existing_outputs) == 1:
+                    dur = self.get_mp3_duration_str(existing_outputs[0])
+                    self.set_file_status(f, f"已存在(时长{dur})" if dur else "已存在", spinning=False)
+                else:
+                    self.set_file_status(f, f"已存在({len(existing_outputs)}段)", spinning=False)
+                self.set_file_progress(f, 100.0)
+                continue
 
             ipath = os.path.join(txt_dir, f)
             text = self.read_text_file(ipath)
