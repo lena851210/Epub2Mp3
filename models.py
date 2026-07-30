@@ -9,9 +9,10 @@ import json
 import threading
 import unicodedata
 import asyncio
+import warnings
 from typing import Dict, Any, List, Tuple
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
 import edge_tts
 
 # ====== 常量定义 ======
@@ -289,7 +290,11 @@ def looks_like_noise(node: Any) -> bool:
 
 def prepare_soup(html: str) -> BeautifulSoup:
     """清理 HTML 并准备 BeautifulSoup"""
-    soup = BeautifulSoup(html, "lxml")
+    # EPUB 正文通常是 XHTML；按 HTML 宽容解析是有意为之，
+    # 只屏蔽 BeautifulSoup 对这一已知场景的提示。
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        soup = BeautifulSoup(html, "lxml")
     
     # 删除不需要的标签
     for t in list(soup.find_all(REMOVE_TAGS)):

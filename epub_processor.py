@@ -119,7 +119,12 @@ def split_chapter_by_internal_headings(ch: Dict[str, Any]) -> List[Dict[str, Any
         nonlocal buf, cur_title
         txt = normalize_whitespace("\n\n".join(buf).strip())
         if txt:
-            parts.append({"title": cur_title or title, "content": txt, "hrefs": hrefs[:]})
+            parts.append({
+                "title": cur_title or title,
+                "content": txt,
+                "hrefs": hrefs[:],
+                "toc_confirmed": bool(ch.get("toc_confirmed")),
+            })
         buf = []
 
     for p in paras:
@@ -192,7 +197,11 @@ def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 ch["title"] = pending_volume_prefix
             pending_volume_prefix = ""
 
-        if chars < MIN_CHAPTER_CHARS and i < len(expanded) - 1:
+        if (
+            not ch.get("toc_confirmed")
+            and chars < MIN_CHAPTER_CHARS
+            and i < len(expanded) - 1
+        ):
             # 合并到下一章（保持顺序：把短内容放到下一章开头）
             nxt = expanded[i + 1]
             prefix = content
@@ -526,6 +535,10 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
 
     def should_merge_with_previous(prev_chapter, curr_chapter):
         """判断是否应合并到前一章"""
+        # TOC 明确列出的章节即使很短，也是真实章节，不能被启发式规则吞掉。
+        if curr_chapter.get("toc_confirmed"):
+            return False
+
         prev_content = prev_chapter.get("content", "")
         curr_content = curr_chapter.get("content", "")
         curr_title = (curr_chapter.get("title") or "").strip()
@@ -650,7 +663,12 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
         if effective_toc_title:
             if current:
                 finalize_current()
-            current = {"title": effective_toc_title, "texts": [], "hrefs": [href]}
+            current = {
+                "title": effective_toc_title,
+                "texts": [],
+                "hrefs": [href],
+                "toc_confirmed": True,
+            }
             if text:
                 current["texts"].append(text)
             continue
