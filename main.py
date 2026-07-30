@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import platform
 import shutil
+import time
 from typing import Optional
 
 from pydub import AudioSegment
@@ -41,6 +42,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.stop_flag = False
         self.is_generating = False
         self.generation_thread = None
+        self.is_previewing = False
 
         # UI 状态管理
         self.selection_states = {}
@@ -192,7 +194,13 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.voice_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 6))
 
         ttk.Button(voice_lf, text="刷新列表", command=self.refresh_voices, width=10).grid(row=0, column=2, padx=(0, 6), pady=(0, 6), sticky="e")
-        ttk.Button(voice_lf, text="试听", command=self.preview_audio, width=8).grid(row=0, column=3, pady=(0, 6), sticky="e")
+        self.preview_btn = ttk.Button(
+            voice_lf,
+            text="试听",
+            command=self.preview_audio,
+            width=8
+        )
+        self.preview_btn.grid(row=0, column=3, pady=(0, 6), sticky="e")
 
         sliders = ttk.Frame(voice_lf)
         sliders.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 0))
@@ -537,22 +545,57 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
     def preview_audio(self):
         """试听音频"""
+        if self.is_previewing:
+            self.set_status("试听正在生成中，请稍候...")
+            return
+
+        voice_name = self.voice_var.get()
+        speed = self.speed_var.get()
+        pitch = self.pitch_var.get()
+        volume = self.volume_var.get()
+        text = f"你好，我是你的有声书助手，现在是{voice_name}为您朗读。"
+
+        self.is_previewing = True
+        self.preview_btn.configure(state="disabled")
+        self.set_status("正在生成试听音频...")
+
         def worker():
-            voice_name = self.voice_var.get()
-            text = f"你好，我是你的有声书助手，现在是{voice_name}为您朗读。"
             tmp_file = None
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
                     tmp_file = tmp.name
 
-                self.edge.text_to_speech(
-                    text=text,
-                    voice=self.voice_var.get(),
-                    speed=self.speed_var.get(),
-                    pitch=self.pitch_var.get(),
-                    volume=self.volume_var.get(),
-                    output_file=tmp_file
-                )
+                last_error = None
+                max_attempts = 3
+
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        if os.path.exists(tmp_file):
+                            os.remove(tmp_file)
+
+                        self.edge.text_to_speech(
+                            text=text,
+                            voice=voice_name,
+                            speed=speed,
+                            pitch=pitch,
+                            volume=volume,
+                            output_file=tmp_file
+                        )
+
+                        if os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 0:
+                            last_error = None
+                            break
+                        raise RuntimeError("语音服务未生成有效音频文件")
+                    except Exception as e:
+                        last_error = e
+                        if attempt < max_attempts:
+                            self.set_status(
+                                f"试听暂时失败，正在自动重试（{attempt + 1}/{max_attempts}）..."
+                            )
+                            time.sleep(0.6 * attempt)
+
+                if last_error is not None:
+                    raise last_error
 
                 self.set_status("试听文件生成成功，开始播放...")
 
@@ -576,13 +619,13 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             except subprocess.CalledProcessError as e:
                 self.set_status(f"播放命令失败: {e}")
             except Exception as e:
-                self.set_status(f"试听失败: {e}")
-                err_msg = str(e)
+                friendly_message = self.format_tts_error(e)
+                self.set_status("试听失败，请按提示重试。")
                 self.root.after(
                     0,
-                    lambda msg=err_msg: messagebox.showerror(
+                    lambda msg=friendly_message: messagebox.showerror(
                         "试听失败",
-                        f"无法连接到语音服务。\n\n错误信息：\n{msg}"
+                        msg
                     )
                 )
             finally:
@@ -592,8 +635,39 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
                     except Exception:
                         pass
 
+                def finish_preview():
+                    self.is_previewing = False
+                    self.preview_btn.configure(state="normal")
+
+                try:
+                    self.root.after(0, finish_preview)
+                except Exception:
+                    pass
+
         import threading
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def format_tts_error(error: Exception) -> str:
+        """把 Edge TTS 的技术错误转换成普通用户能执行的提示。"""
+        technical_message = str(error).strip() or error.__class__.__name__
+        lower_message = technical_message.lower()
+
+        if "no audio was received" in lower_message:
+            return (
+                "语音服务本次没有返回音频，程序已自动重试 3 次。\n\n"
+                "你可以这样处理：\n"
+                "1. 点击「刷新列表」后重新选择音色；\n"
+                "2. 保持语速、音调和音量为默认值再试听；\n"
+                "3. 如果仍然失败，等待几分钟后再试。\n\n"
+                f"技术信息：{technical_message}"
+            )
+
+        return (
+            "试听音频生成失败，程序已自动重试 3 次。\n\n"
+            "请检查网络，或点击「刷新列表」后换一个音色再试。\n\n"
+            f"技术信息：{technical_message}"
+        )
 
     def open_output_dir(self):
         """打开输出音频目录"""
