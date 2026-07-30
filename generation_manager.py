@@ -12,6 +12,57 @@ from tkinter import messagebox
 from audio_processor import _process_audio_chunk, find_existing_outputs_for_txt
 
 
+def classify_task_status(status_text: str) -> Optional[str]:
+    """把界面状态归一成可统计的任务结果。"""
+    status = (status_text or "").strip().lstrip("✅").strip()
+
+    if status.startswith("已完成"):
+        return "success"
+    if status.startswith("已存在") or status.startswith("跳过"):
+        return "skipped"
+    if status.startswith("失败") or "合成失败" in status:
+        return "failed"
+    if status.startswith("已中断"):
+        return "stopped"
+    return None
+
+
+def summarize_task(task_files, task_statuses, task_progress):
+    """计算总体进度和成功/跳过/失败/中断数量。"""
+    files = list(dict.fromkeys(task_files or []))
+    total = len(files)
+    counts = {
+        "success": 0,
+        "skipped": 0,
+        "failed": 0,
+        "stopped": 0,
+    }
+
+    weighted_progress = 0.0
+    for file_name in files:
+        category = classify_task_status(task_statuses.get(file_name, ""))
+        if category:
+            counts[category] += 1
+
+        file_progress = max(
+            0.0,
+            min(100.0, float(task_progress.get(file_name, 0.0)))
+        )
+        if category:
+            file_progress = max(file_progress, 100.0)
+        weighted_progress += file_progress
+
+    handled = sum(counts.values())
+    percent = int(round(weighted_progress / total)) if total else 0
+    return {
+        "total": total,
+        "handled": handled,
+        "pending": max(0, total - handled),
+        "percent": percent,
+        **counts,
+    }
+
+
 class GenerationMixin:
     """音频生成相关方法"""
 
@@ -115,12 +166,21 @@ class GenerationMixin:
 
     def set_file_progress(self, iid: str, percent: float):
         """设置文件进度"""
-        var = self.progress_vars.get(iid)
-        if var is None:
-            import tkinter as tk
-            var = tk.DoubleVar(value=0.0)
-            self.progress_vars[iid] = var
-        self.root.after(0, lambda v=var, p=percent: v.set(max(0.0, min(100.0, float(p)))))
+        progress = max(0.0, min(100.0, float(percent)))
+
+        def apply():
+            var = self.progress_vars.get(iid)
+            if var is None:
+                import tkinter as tk
+                var = tk.DoubleVar(value=0.0)
+                self.progress_vars[iid] = var
+            var.set(progress)
+
+            if iid in getattr(self, "task_files", []):
+                self.task_progress[iid] = progress
+                self.update_overall_progress()
+
+        self.root.after(0, apply)
 
     def set_error(self, iid: str, exc: Exception):
         """设置错误信息"""
@@ -184,8 +244,21 @@ class GenerationMixin:
             )
             return
 
+        files = self.get_selected_files()
+        if not files:
+            self.set_status("请先在文件列表中勾选至少一个TXT文件。")
+            messagebox.showwarning(
+                "提示",
+                "请在文件列表中勾选至少一个 TXT 文件。"
+            )
+            return
+
         self.stop_flag = False
         self.is_generating = True
+        self.task_files = list(files)
+        self.task_statuses = {}
+        self.task_progress = {file_name: 0.0 for file_name in files}
+        self.reset_overall_progress()
 
         if not self._has_ffmpeg():
             self.set_status("未检测到 ffmpeg，若分段>1将无法合并；请先安装 ffmpeg。")
@@ -231,6 +304,58 @@ class GenerationMixin:
             except Exception:
                 pass
 
+    def reset_overall_progress(self):
+        """开始新任务时重置总体进度。"""
+        total = len(getattr(self, "task_files", []))
+        self.overall_progress_var.set(0.0)
+        self.overall_progress_text_var.set(f"整体进度：0/{total} · 0%")
+
+    def update_overall_progress(self, final: bool = False):
+        """根据单章状态刷新整本书进度。"""
+        summary = summarize_task(
+            getattr(self, "task_files", []),
+            getattr(self, "task_statuses", {}),
+            getattr(self, "task_progress", {}),
+        )
+        percent = 100 if final and summary["total"] else summary["percent"]
+        self.overall_progress_var.set(percent)
+
+        if not summary["total"]:
+            self.overall_progress_text_var.set("整体进度：未开始")
+            return summary
+
+        if final:
+            prefix = "已停止" if self.stop_flag else "已完成"
+            self.overall_progress_text_var.set(
+                f"{prefix}：成功 {summary['success']} · "
+                f"跳过 {summary['skipped']} · "
+                f"失败 {summary['failed']} · "
+                f"中断 {summary['stopped']}"
+            )
+        else:
+            self.overall_progress_text_var.set(
+                f"整体进度：{summary['handled']}/{summary['total']} · {percent}%"
+            )
+        return summary
+
+    def show_task_result(self, out_dir: str):
+        """显示一次清楚、可复核的任务结果。"""
+        summary = self.update_overall_progress(final=True)
+        stopped = self.stop_flag
+
+        title = "转换已停止" if stopped else "转换完成"
+        body = (
+            f"成功：{summary['success']} 个\n"
+            f"已跳过：{summary['skipped']} 个\n"
+            f"失败：{summary['failed']} 个\n"
+            f"已中断：{summary['stopped']} 个"
+        )
+        if summary["pending"]:
+            body += f"\n未完成：{summary['pending']} 个"
+        body += f"\n\n音频目录：\n{out_dir}"
+
+        messagebox.showinfo(title, body)
+
     def generate(self):
         """生成有声书"""
         txt_dir = self.txt_dir.get()
@@ -245,7 +370,7 @@ class GenerationMixin:
 
         os.makedirs(out_dir, exist_ok=True)
 
-        files = self.get_selected_files()
+        files = list(getattr(self, "task_files", []))
         if not files:
             self.set_status("请先在文件列表中勾选至少一个TXT文件。")
             self.root.after(0, lambda: messagebox.showwarning("提示", "请在文件列表中勾选至少一个TXT文件。"))
@@ -258,12 +383,14 @@ class GenerationMixin:
 
         if self.stop_flag:
             for f in files:
-                cur = self.files_tree.set(f, "status")
-                if cur not in ("✅ 已完成", "✅ 已完成，", "失败", "已存在(跳过)"):
+                cur = self.task_statuses.get(f, "")
+                if classify_task_status(cur) is None:
                     self.set_file_status(f, "已中断", spinning=False)
             self.set_status("任务已中断。")
         else:
             self.set_status(f"所有任务处理完成。输出目录：{out_dir}")
+
+        self.root.after(0, lambda path=out_dir: self.show_task_result(path))
 
     def generate_plain_files(self, files: List[str], txt_dir: str, out_dir: str):
         """普通模式：每个 TXT 直接输出一个 MP3，不做按目标时长拆分/合并"""

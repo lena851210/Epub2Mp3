@@ -43,6 +43,9 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.is_generating = False
         self.generation_thread = None
         self.is_previewing = False
+        self.task_files = []
+        self.task_statuses = {}
+        self.task_progress = {}
 
         # UI 状态管理
         self.selection_states = {}
@@ -273,11 +276,16 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         self.merge_check = ttk.Checkbutton(
             merge_row,
-            text="按目标时长合并/拆分TXT",
+            text="按目标时长组织 MP3",
             variable=self.merge_var,
             command=self.toggle_merge_options
         )
         self.merge_check.pack(side="left")
+        ttk.Label(
+            merge_row,
+            text="（短章节合并，超长章节拆分）",
+            foreground="#666"
+        ).pack(side="left", padx=(6, 0))
 
         self.target_row = ttk.Frame(merge_row)
         ttk.Label(self.target_row, text="目标时长(分钟):").pack(side="left", padx=(12, 6))
@@ -340,8 +348,35 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         status_bar = ttk.Frame(main)
         status_bar.grid(row=4, column=0, sticky="ew")
+        status_bar.columnconfigure(0, weight=1)
+
+        status_text_row = ttk.Frame(status_bar)
+        status_text_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        status_text_row.columnconfigure(0, weight=1)
+
         self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(status_bar, textvariable=self.status_var, anchor="w").pack(fill="x")
+        ttk.Label(
+            status_text_row,
+            textvariable=self.status_var,
+            anchor="w"
+        ).grid(row=0, column=0, sticky="ew")
+
+        self.overall_progress_text_var = tk.StringVar(value="整体进度：未开始")
+        ttk.Label(
+            status_text_row,
+            textvariable=self.overall_progress_text_var,
+            anchor="e"
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        self.overall_progress_var = tk.DoubleVar(value=0.0)
+        self.overall_progress_bar = ttk.Progressbar(
+            status_bar,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100.0,
+            variable=self.overall_progress_var
+        )
+        self.overall_progress_bar.grid(row=1, column=0, sticky="ew")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -510,6 +545,10 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
                 if iid in self.spinner_active:
                     del self.spinner_active[iid]
                 self.files_tree.set(iid, "status", status_text)
+
+            if iid in getattr(self, "task_files", []):
+                self.task_statuses[iid] = status_text
+                self.update_overall_progress()
 
         self.root.after(0, _apply)
 
