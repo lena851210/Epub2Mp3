@@ -257,17 +257,24 @@ python3 -c "import tkinter; print('tkinter ok')"
 
 ## ▶️ 运行方式
 
+### 推荐：macOS 双击启动
+
+在 Finder 中打开项目文件夹，然后双击：
+
+```text
+启动 EPUB to MP3.command
+```
+
+启动器会自动定位项目目录并检查运行环境。第一次启动或环境不完整时，会在终端窗口中自动安装 / 修复依赖，完成后打开应用。
+
+如果 macOS 首次阻止打开，请右键点击启动器，选择 **“打开”**，再确认一次。
+
+### 备用：使用终端启动
+
 在项目目录中执行：
 
 ```bash
-python app.py
-```
-
-如果你使用虚拟环境：
-
-```bash
-source .venv/bin/activate
-python app.py
+.venv/bin/python app.py
 ```
 
 ---

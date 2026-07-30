@@ -53,8 +53,8 @@ echo "正在升级 pip ..."
 pip install --upgrade pip
 
 # 5. 安装 Python 依赖
-echo "正在安装项目依赖（ebooklib, beautifulsoup4, lxml, pydub, edge-tts）..."
-pip install "ebooklib" "beautifulsoup4" "lxml" "pydub" "edge-tts"
+echo "正在根据 requirements.txt 安装项目依赖..."
+pip install -r "${PROJECT_DIR}/requirements.txt"
 
 echo "依赖安装完成。"
 
@@ -102,9 +102,8 @@ fi
 
 echo
 echo "=== 环境准备完成 ==="
-echo "接下来可以使用："
-echo "  cd \"$PROJECT_DIR\""
-echo "  source .venv/bin/activate"
-echo "  python app.py"
+echo "现在可以双击“启动 EPUB to MP3.command”打开应用。"
+echo "也可以在终端中使用："
+echo "  \"$VENV_DIR/bin/python\" \"$PROJECT_DIR/app.py\""
 echo
 echo "如果在运行 app.py 时仍看到 tkinter 报错，请把完整错误信息发给我，我帮你继续排查。"
