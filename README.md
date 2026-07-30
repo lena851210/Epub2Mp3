@@ -1,6 +1,12 @@
 # 有声书生成工具 (EPUB to MP3)
 
-**版本：v1.0 | 语言：Python 3.8+ | 系统：Windows / macOS / Linux**
+**版本：v3.0 | 语言：Python 3.8+ | 系统：Windows / macOS / Linux**
+
+正式项目目录：
+
+`/Users/lilina/Documents/Codex Programs/Project 2/epub-to-mp3`
+
+GitHub：[lena851210/Epub2Mp3](https://github.com/lena851210/Epub2Mp3)
 
 ---
 
@@ -40,13 +46,17 @@
 ## 📁 项目结构
 
 ```
-EPUB_to_MP3_Project/
+epub-to-mp3/
 ├── models.py                  # 【模块1】配置类 + TTS + 文本工具
 ├── epub_processor.py          # 【模块2】EPUB 解析 + 转 TXT
 ├── audio_processor.py         # 【模块3】文本预处理 + 音频处理
 ├── main.py                    # 【模块4】GUI 应用 + 业务逻辑
 ├── app.py                     # 【模块5】程序入口
-├── config.json                # 配置文件（自动生成）
+├── requirements.txt           # Python 依赖清单
+├── config.example.json        # 配置示例
+├── config.json                # 本机配置（自动生成，不上传 GitHub）
+├── archive/                   # 迁移前历史脚本，仅供追溯
+├── AGENTS.md                  # 与 Codex 协作时的项目规则
 └── README.md                  # 本文件
 ```
 
@@ -87,16 +97,21 @@ python3 --version
 # 输出示例: Python 3.12.7
 ```
 
-### 2️⃣ 安装依赖包
+### 2️⃣ 建立独立环境并安装依赖
 
 ```bash
-pip install ebooklib beautifulsoup4 pydub edge-tts
+cd "/Users/lilina/Documents/Codex Programs/Project 2/epub-to-mp3"
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 验证安装：
 ```bash
-pip list | grep -E "ebooklib|beautifulsoup4|pydub|edge-tts"
+python -c "import ebooklib, bs4, lxml, pydub, edge_tts; print('依赖正常')"
 ```
+
+macOS 也可以运行 `./setup_env.sh` 自动建立环境。
 
 ### 3️⃣ 安装 FFmpeg
 
@@ -136,8 +151,9 @@ ffmpeg -version
 #### 方式 1：运行 Python 脚本
 
 ```bash
-cd /Users/lilina/GitHub Repositories/Epub2Mp3/
-python3 app.py
+cd "/Users/lilina/Documents/Codex Programs/Project 2/epub-to-mp3"
+source .venv/bin/activate
+python app.py
 ```
 
 #### 方式 2：在 IDE 中运行
@@ -640,5 +656,3 @@ MIT License
 ---
 
 **感谢使用有声书生成工具！** 🎉
-
-Test push on 2026年 3月10日 星期二 11时09分44秒 CST

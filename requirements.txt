@@ -1,0 +1,5 @@
+EbookLib
+beautifulsoup4
+edge-tts
+lxml
+pydub
