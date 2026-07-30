@@ -11,7 +11,6 @@ import tempfile
 import platform
 import shutil
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
 
 from pydub import AudioSegment
 
@@ -40,6 +39,8 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.root.geometry("960x680")
         self.root.minsize(720, 560)
         self.stop_flag = False
+        self.is_generating = False
+        self.generation_thread = None
 
         # UI 状态管理
         self.selection_states = {}
@@ -56,9 +57,6 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         # 目录监测
         self.dir_watch_job = None
         self.last_dir_snapshot = None
-
-        # 线程池（目前保留）
-        self.tts_executor = ThreadPoolExecutor(max_workers=2)
 
         self.create_ui()
         self._start_dir_watch()
@@ -312,7 +310,14 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         right_btns = ttk.Frame(action_bar)
         right_btns.grid(row=0, column=1, sticky="e")
-        ttk.Button(right_btns, text="停止", command=self.stop_generation, width=10).pack(side="left", padx=(0, 10))
+        self.stop_btn = ttk.Button(
+            right_btns,
+            text="停止",
+            command=self.stop_generation,
+            width=10,
+            state="disabled"
+        )
+        self.stop_btn.pack(side="left", padx=(0, 10))
 
         self.start_btn = ttk.Button(
             right_btns,
@@ -605,11 +610,11 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         os.makedirs(out_dir, exist_ok=True)
 
         if platform.system() == "Darwin":
-            os.system(f'open "{out_dir}"')
+            subprocess.run(["open", out_dir], check=False)
         elif platform.system() == "Windows":
             os.startfile(out_dir)
         else:
-            os.system(f'xdg-open "{out_dir}"')
+            subprocess.run(["xdg-open", out_dir], check=False)
 
     def import_epub(self):
         """导入 EPUB 文件"""

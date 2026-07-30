@@ -1,5 +1,5 @@
-EbookLib
-beautifulsoup4
-edge-tts
-lxml
-pydub
+EbookLib==0.20
+beautifulsoup4==4.15.0
+edge-tts==7.2.8
+lxml==6.1.1
+pydub==0.25.1

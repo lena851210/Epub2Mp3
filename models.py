@@ -157,18 +157,16 @@ class EdgeTTSWrapper:
     """Edge TTS 语音合成包装"""
 
     def __init__(self):
-        self.voices = []
+        # 启动时直接使用本地预设，避免网络波动阻塞整个界面。
+        # 用户点击“刷新列表”时，再联网过滤当前真正可用的音色。
+        self.voices = list(VOICE_MAPPING.keys())
         self.available_voice_codes = set()
-        self._load_voices_blocking()
-        threading.Thread(target=self._load_voices_async, daemon=True).start()
 
     def _fetch_available_voice_codes(self) -> set:
         """获取 edge-tts 当前真实可用的 voice short name 集合"""
+        loop = asyncio.new_event_loop()
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             raw_voices = loop.run_until_complete(edge_tts.list_voices())
-            loop.close()
 
             voice_codes = set()
             for item in raw_voices:
@@ -180,6 +178,8 @@ class EdgeTTSWrapper:
         except Exception as e:
             print("获取真实可用声音列表失败:", e)
             return set()
+        finally:
+            loop.close()
 
     def _build_visible_voice_labels(self, available_codes: set) -> list:
         """
@@ -204,19 +204,6 @@ class EdgeTTSWrapper:
             self.voices = self._build_visible_voice_labels(self.available_voice_codes)
         except Exception as e:
             print("同步加载声音列表失败:", e)
-            self.available_voice_codes = set()
-            self.voices = list(VOICE_MAPPING.keys())
-
-    def _load_voices_async(self):
-        """异步加载声音列表"""
-        try:
-            available_codes = self._fetch_available_voice_codes()
-            visible_labels = self._build_visible_voice_labels(available_codes)
-
-            self.available_voice_codes = available_codes
-            self.voices = visible_labels
-        except Exception as e:
-            print("异步加载声音失败:", e)
             self.available_voice_codes = set()
             self.voices = list(VOICE_MAPPING.keys())
 

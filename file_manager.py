@@ -140,13 +140,27 @@ class FileManagerMixin:
                 except Exception:
                     has_real_txt_files = False
 
-            can_start = has_txt_dir and has_files_in_tree and has_real_txt_files
+            is_generating = bool(getattr(self, "is_generating", False))
+            can_start = (
+                has_txt_dir
+                and has_files_in_tree
+                and has_real_txt_files
+                and not is_generating
+            )
 
             if hasattr(self, "start_btn"):
                 self._set_primary_button_state(self.start_btn, can_start)
 
+            if hasattr(self, "stop_btn"):
+                self.stop_btn.configure(
+                    state=("normal" if is_generating else "disabled")
+                )
+
             if hasattr(self, "import_epub_btn"):
-                self._set_primary_button_state(self.import_epub_btn, True)
+                self._set_primary_button_state(
+                    self.import_epub_btn,
+                    not is_generating
+                )
 
         except Exception:
             pass
@@ -347,7 +361,7 @@ class FileManagerMixin:
         return
 
     def _toggle_selection(self, iid: str):
-        """切换单���文件的选择状态"""
+        """切换单个文件的选择状态"""
         if not self.files_tree.exists(iid):
             return
 

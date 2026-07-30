@@ -133,6 +133,9 @@ class GenerationMixin:
         os.makedirs(parent, exist_ok=True)
 
         for n in range(1, max_retries + 1):
+            if self.stop_flag:
+                return False
+
             try:
                 if os.path.exists(output_file):
                     try:
@@ -155,6 +158,8 @@ class GenerationMixin:
 
             except Exception as e:
                 last_exc = e
+                if self.stop_flag:
+                    return False
                 if n < max_retries:
                     time.sleep(min(1.5, 0.5 * n))
 
@@ -164,6 +169,10 @@ class GenerationMixin:
 
     def start_generation(self):
         """开始转换任务"""
+        if self.is_generating:
+            self.set_status("转换任务正在进行中，请勿重复启动。")
+            return
+
         if not self.refresh_txt_dir_state():
             self.set_status("请先选择有效的TXT目录")
             self.root.after(
@@ -176,18 +185,51 @@ class GenerationMixin:
             return
 
         self.stop_flag = False
+        self.is_generating = True
 
         if not self._has_ffmpeg():
             self.set_status("未检测到 ffmpeg，若分段>1将无法合并；请先安装 ffmpeg。")
 
         self.update_action_buttons_state()
         self.set_status("开始转换任务...")
-        threading.Thread(target=self.generate, daemon=True).start()
+        self.generation_thread = threading.Thread(
+            target=self._run_generation_task,
+            daemon=True
+        )
+        self.generation_thread.start()
 
     def stop_generation(self):
         """停止转换任务"""
+        if not self.is_generating:
+            self.set_status("当前没有正在进行的转换任务。")
+            return
+
         self.stop_flag = True
-        self.set_status("用户请求停止，正在中止任务...")
+        self.set_status("已请求停止；当前语音片段完成后将中止任务...")
+
+    def _run_generation_task(self):
+        """在后台运行转换，并确保按钮状态最终恢复。"""
+        try:
+            self.generate()
+        except Exception as e:
+            self.set_status(f"转换任务异常：{e}")
+            self.root.after(
+                0,
+                lambda msg=str(e): messagebox.showerror(
+                    "转换失败",
+                    f"转换任务意外中断。\n\n错误信息：\n{msg}"
+                )
+            )
+        finally:
+            def finish():
+                self.is_generating = False
+                self.generation_thread = None
+                self.update_action_buttons_state()
+
+            try:
+                self.root.after(0, finish)
+            except Exception:
+                pass
 
     def generate(self):
         """生成有声书"""

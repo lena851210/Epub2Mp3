@@ -511,7 +511,7 @@ def remove_redundant_heading_lines(text: str, title: str = "", scan_first_lines:
     return normalize_whitespace("\n".join(result))
 
 
-# ====== 【函数5���从书籍构建章节 ======
+# ====== 【函数5】从书籍构建章节 ======
 def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
     """
     从 EPUB 书籍中构建章节列表
