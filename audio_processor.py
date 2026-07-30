@@ -39,15 +39,14 @@ def _short_title(title: str, max_len: int = 20) -> str:
 
 def build_output_path(out_dir: str, file_list: List[str], part_num: int, split_total: int = 1) -> str:
     """
-    命名规则（按你的需求）：
+    命名规则：
 
     单文件：
       - 不切分：001 章节名.mp3
       - 切分：  001-1 章节名.mp3、001-2 章节名.mp3 ...
-        （只要 split_total>1，则从第1段开始也带 -1）
 
     多文件合并：
-      - 001-010 第一章_到_第十章.mp3  （更清晰，且不加 -1）
+      - 001-010 第一章_到_第十章.mp3
     """
     stems = [sanitize_filename(os.path.splitext(f)[0]) for f in file_list]
 
@@ -56,15 +55,12 @@ def build_output_path(out_dir: str, file_list: List[str], part_num: int, split_t
         stem = stems[0].strip()
         chap_no, title = _parse_num_and_title(stem)
 
-        # chap_str：保留原来的 3 位编号（如果解析不到就空）
         chap_str = f"{chap_no:03d}" if chap_no is not None else ""
         title = title.strip() or stem or "无标题"
 
         if split_total and split_total > 1:
-            # 切分：从 1 开始就标号
             base = f"{chap_str}-{int(part_num)} {title}".strip()
         else:
-            # 不切分：编号 + 空格 + 标题（例如：001 第一章）
             base = f"{chap_str} {title}".strip() if chap_str else title
 
         base = sanitize_filename(base, max_len=140)
@@ -86,6 +82,64 @@ def build_output_path(out_dir: str, file_list: List[str], part_num: int, split_t
     return os.path.join(out_dir, base + ".mp3")
 
 
+def build_single_file_output_candidates(out_dir: str, txt_filename: str) -> List[str]:
+    """
+    根据单个 TXT 文件名，推导可能对应的正式 MP3 文件：
+    1) 未拆分时：001 标题.mp3
+    2) 拆分时：001-1 标题.mp3、001-2 标题.mp3 ...（这里只做“前缀匹配”）
+
+    返回候选正式路径列表（第一个通常是未拆分文件的精确路径）。
+    """
+    exact_path = build_output_path(out_dir, [txt_filename], part_num=1, split_total=1)
+    return [exact_path]
+
+
+def find_existing_outputs_for_txt(out_dir: str, txt_filename: str) -> List[str]:
+    """
+    查找某个 TXT 在“单文件模式”下已经存在的正式输出 MP3。
+    规则：
+    - 精确匹配未拆分文件：001 标题.mp3
+    - 或匹配拆分文件前缀：001-1 标题.mp3 / 001-2 标题.mp3 ...
+    - 忽略 __tmp_*.mp3 临时文件
+    """
+    if not out_dir or not os.path.isdir(out_dir):
+        return []
+
+    exact_candidates = build_single_file_output_candidates(out_dir, txt_filename)
+    exact_path = exact_candidates[0] if exact_candidates else ""
+
+    found: List[str] = []
+
+    if exact_path and os.path.exists(exact_path) and os.path.isfile(exact_path):
+        found.append(exact_path)
+
+    stem = sanitize_filename(os.path.splitext(txt_filename)[0]).strip()
+    chap_no, title = _parse_num_and_title(stem)
+    chap_str = f"{chap_no:03d}" if chap_no is not None else ""
+    title = sanitize_filename(title.strip() or stem or "无标题")
+
+    # 匹配拆分后的正式文件：001-1 标题.mp3 / 001-2 标题.mp3 ...
+    if chap_str:
+        split_prefix = f"{chap_str}-"
+        split_title_part = f" {title}.mp3"
+
+        try:
+            for fn in os.listdir(out_dir):
+                if not fn.lower().endswith(".mp3"):
+                    continue
+                if fn.startswith("__tmp_"):
+                    continue
+                if fn.startswith(split_prefix) and fn.endswith(split_title_part):
+                    full = os.path.join(out_dir, fn)
+                    if os.path.isfile(full) and full not in found:
+                        found.append(full)
+        except Exception:
+            pass
+
+    found.sort()
+    return found
+
+
 # ====== 【函数1】文本预处理：更自然的断句/按标题拆分 ======
 def preprocess_text(text: str, max_length: int = 500) -> List[str]:
     """
@@ -102,7 +156,6 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
     t = text.replace("\r\n", "\n").replace("\r", "\n")
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
 
-    # 章节标题特征（中英文都兼容一些）
     heading_re = re.compile(
         r"^(第[0-9一二三四五六七八九十百千万零〇两]+[章节回卷篇部].{0,30}|Chapter\s+\d+.*|CHAPTER\s+\d+.*)$",
         re.IGNORECASE
@@ -114,14 +167,11 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
             return False
         if heading_re.match(ln) and len(ln) <= 60:
             return True
-        # 很短且没有正文标点，也当标题
         if len(ln) <= 25 and not any(c in ln for c in "。，；！？.!?"):
-            # 又包含“章/节/篇/回/卷/部”等
             if any(k in ln for k in ("章", "节", "篇", "回", "卷", "部")):
                 return True
         return False
 
-    # 先形成“基础单元”（段落/标题）
     units: List[str] = []
     for para in re.split(r"\n{2,}", t):
         para = para.strip()
@@ -141,7 +191,6 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
         if buf:
             units.append(" ".join(buf).strip())
 
-    # 把过长 unit 拆成句子（句末即切）
     sentences: List[str] = []
     for u in units:
         if len(u) <= max_length:
@@ -151,7 +200,6 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
         parts = [p.strip() for p in parts if p and p.strip()]
         sentences.extend(parts if parts else [u])
 
-    # 再把句子打包回 <= max_length 的块
     chunks: List[str] = []
     cur = ""
     for s in sentences:
@@ -170,7 +218,6 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
     if cur:
         chunks.append(cur.strip())
 
-    # 仍然超长就硬切
     final: List[str] = []
     for c in chunks:
         if len(c) <= max_length:
@@ -202,7 +249,7 @@ def _process_audio_chunk(
     seconds_to_str,
     stop_flag_check,
     tts_with_retry,
-    split_total: int = 1,   # 新增：用于“切分时从第1段开始编号”
+    split_total: int = 1,
 ):
     """
     处理一个音频块（包含文本合成和音频合并）
@@ -212,10 +259,9 @@ def _process_audio_chunk(
             set_file_status(name, "已中断", spinning=False)
         return None
 
-    # 输出路径
     opath = build_output_path(out_dir, file_list, part_num, split_total=split_total)
 
-    # 已存在则跳过
+    # 已存在则跳过（只针对正式输出文件）
     if os.path.exists(opath):
         dur = get_mp3_duration_str(opath)
         for name in file_list:
@@ -226,7 +272,6 @@ def _process_audio_chunk(
                 set_file_status(name, "已存在(跳过)", spinning=False)
         return opath
 
-    # 预处理文本
     paras = preprocess_text(text)
     total_paras = max(1, len(paras))
 
@@ -241,7 +286,6 @@ def _process_audio_chunk(
     tempfiles: List[str] = []
     ok = True
 
-    # 合成每个段落
     for j, p in enumerate(paras, 1):
         if stop_flag_check():
             ok = False
@@ -249,7 +293,6 @@ def _process_audio_chunk(
                 set_file_status(name, "已中断", spinning=False)
             break
 
-        # 临时文件名：加 pid + 时间戳，避免冲突
         tfile = os.path.join(out_dir, f"__tmp_{os.getpid()}_{int(time.time()*1000)}_{j}.mp3")
         bn = os.path.basename(tfile)
 
@@ -270,7 +313,6 @@ def _process_audio_chunk(
         for name in file_list:
             set_file_progress(name, percent)
 
-    # 合并导出
     if ok and not stop_flag_check():
         for name in file_list:
             set_file_status(name, f"合并音频（{len(tempfiles)} 段）", spinning=(name == leader))
@@ -286,7 +328,7 @@ def _process_audio_chunk(
                 for tf in tempfiles:
                     audio = AudioSegment.from_file(tf, format="mp3")
                     combined += audio
-                    combined += AudioSegment.silent(duration=800)  # 0.8 秒停顿更自然
+                    combined += AudioSegment.silent(duration=800)
 
                 for name in file_list:
                     set_file_status(name, "导出 MP3...", spinning=(name == leader))
@@ -294,7 +336,6 @@ def _process_audio_chunk(
                 combined.export(opath, format="mp3")
                 dur_str = seconds_to_str(int(round(len(combined) / 1000)))
 
-            # 清理临时文件
             for tf in tempfiles:
                 if os.path.exists(tf):
                     try:
@@ -320,7 +361,6 @@ def _process_audio_chunk(
                         pass
             return None
 
-    # 失败或中断：清理临时文件
     for tf in tempfiles:
         try:
             os.remove(tf)

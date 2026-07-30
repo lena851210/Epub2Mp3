@@ -155,32 +155,69 @@ class DurationEstimator:
 # ====== 【Class 3】TTS 包装器 ======
 class EdgeTTSWrapper:
     """Edge TTS 语音合成包装"""
+
     def __init__(self):
         self.voices = []
+        self.available_voice_codes = set()
         self._load_voices_blocking()
         threading.Thread(target=self._load_voices_async, daemon=True).start()
+
+    def _fetch_available_voice_codes(self) -> set:
+        """获取 edge-tts 当前真实可用的 voice short name 集合"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            raw_voices = loop.run_until_complete(edge_tts.list_voices())
+            loop.close()
+
+            voice_codes = set()
+            for item in raw_voices:
+                # edge-tts 返回的字段通常包含 ShortName
+                short_name = item.get("ShortName")
+                if short_name:
+                    voice_codes.add(short_name)
+            return voice_codes
+        except Exception as e:
+            print("获取真实可用声音列表失败:", e)
+            return set()
+
+    def _build_visible_voice_labels(self, available_codes: set) -> list:
+        """
+        根据真实可用的 voice code，过滤出 UI 中应显示的中文标签。
+        如果获取失败，则退回到全部 VOICE_MAPPING（避免整个菜单为空）。
+        """
+        if not available_codes:
+            return list(VOICE_MAPPING.keys())
+
+        labels = []
+        for label, code in VOICE_MAPPING.items():
+            if code in available_codes:
+                labels.append(label)
+
+        # 如果交集为空，为避免 UI 完全空白，退回全部
+        return labels if labels else list(VOICE_MAPPING.keys())
 
     def _load_voices_blocking(self):
         """同步加载声音列表"""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            _ = loop.run_until_complete(edge_tts.list_voices())
-            self.voices = list(VOICE_MAPPING.keys())
-            loop.close()
+            self.available_voice_codes = self._fetch_available_voice_codes()
+            self.voices = self._build_visible_voice_labels(self.available_voice_codes)
         except Exception as e:
-            print("获取声音列表失败:", e)
+            print("同步加载声音列表失败:", e)
+            self.available_voice_codes = set()
             self.voices = list(VOICE_MAPPING.keys())
 
     def _load_voices_async(self):
         """异步加载声音列表"""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            _ = loop.run_until_complete(edge_tts.list_voices())
-            self.voices = list(VOICE_MAPPING.keys())
+            available_codes = self._fetch_available_voice_codes()
+            visible_labels = self._build_visible_voice_labels(available_codes)
+
+            self.available_voice_codes = available_codes
+            self.voices = visible_labels
         except Exception as e:
             print("异步加载声音失败:", e)
+            self.available_voice_codes = set()
             self.voices = list(VOICE_MAPPING.keys())
 
     def refresh_voices(self):
@@ -192,14 +229,17 @@ class EdgeTTSWrapper:
         """允许 voice 既可以是 UI 标签，也可以直接是 zh-CN-xxxNeural 代码"""
         if not voice:
             return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
+
         # 1) UI 标签（例如：晓晓(女)）
         if voice in VOICE_MAPPING:
             return VOICE_MAPPING[voice]
+
         # 2) 直接传入的 voice code（例如：zh-CN-XiaoxiaoNeural）
         if voice in VOICE_MAPPING.values():
             return voice
         if isinstance(voice, str) and re.match(r"^[a-z]{2}-[A-Z]{2}-", voice):
             return voice
+
         return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
 
     def text_to_speech(self, text: str, voice: str, speed: float, pitch: float, volume: float, output_file: str):
@@ -208,28 +248,14 @@ class EdgeTTSWrapper:
 
         async def _synth():
             communicate = edge_tts.Communicate(
-                text, edge_voice,
-                rate=f"{(speed-1)*100:+.0f}%",
+                text,
+                edge_voice,
+                rate=f"{(speed - 1) * 100:+.0f}%",
                 pitch=f"{pitch:+.0f}Hz",
                 volume=f"{volume:+.0f}%"
             )
             await communicate.save(output_file)
 
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(_synth())
-        finally:
-            loop.close()
-        """文本转语音"""
-        edge_voice = VOICE_MAPPING.get(voice, "zh-CN-XiaoxiaoNeural")
-        async def _synth():
-            communicate = edge_tts.Communicate(
-                text, edge_voice,
-                rate=f"{(speed-1)*100:+.0f}%",
-                pitch=f"{pitch:+.0f}Hz",
-                volume=f"{volume:+.0f}%"
-            )
-            await communicate.save(output_file)
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(_synth())
