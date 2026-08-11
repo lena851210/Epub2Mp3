@@ -8,6 +8,7 @@ from ebooklib import epub
 from epub_processor import (
     convert_epub_to_txt,
     find_saved_epub_cover,
+    is_volume_only_title,
     remove_leading_title_from_text,
 )
 
@@ -89,6 +90,39 @@ class EpubProcessorTests(unittest.TestCase):
             self.assertNotIn("第二篇的正文", first_text)
             self.assertIn("第二篇的正文", second_text)
             self.assertNotIn("版权信息", "\n".join(path.name for path in txt_files))
+
+    def test_part_divider_is_read_before_next_real_chapter(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            epub_path = temp_root / "结构分隔页测试.epub"
+            self._build_part_divider_epub(epub_path)
+
+            out_dir, converted_count, total_files = convert_epub_to_txt(
+                str(epub_path),
+                max_chars_per_file=200000,
+            )
+
+            txt_files = sorted(Path(out_dir).glob("*.txt"))
+            self.assertEqual(converted_count, 1)
+            self.assertEqual(total_files, 1)
+            self.assertEqual(len(txt_files), 1)
+            self.assertIn("理解科技革命的本质", txt_files[0].name)
+            self.assertNotIn("第一部分", txt_files[0].name)
+
+            text = txt_files[0].read_text(encoding="utf-8")
+            self.assertTrue(
+                text.startswith(
+                    "第一部分 科技创新的体系\n\n"
+                    "理解科技革命的本质\n\n"
+                )
+            )
+            self.assertIn("这是真实章节的正文", text)
+
+    def test_short_real_chapter_is_not_mistaken_for_part_divider(self):
+        self.assertTrue(is_volume_only_title("第一部分 科技创新的体系"))
+        self.assertTrue(is_volume_only_title("第二卷：新世界"))
+        self.assertFalse(is_volume_only_title("第一章 出发"))
+        self.assertFalse(is_volume_only_title("一个很短但完整的故事"))
 
     @staticmethod
     def _build_sample_epub(target: Path):
@@ -179,6 +213,42 @@ class EpubProcessorTests(unittest.TestCase):
             ),
         )
         book.spine = ["nav", copyright_page, articles]
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        epub.write_epub(str(target), book)
+
+    @staticmethod
+    def _build_part_divider_epub(target: Path):
+        book = epub.EpubBook()
+        book.set_identifier("part-divider-test")
+        book.set_title("结构分隔页测试")
+        book.set_language("zh-CN")
+
+        part_page = epub.EpubHtml(
+            title="第一部分 科技创新的体系",
+            file_name="part_1.xhtml",
+            lang="zh-CN",
+        )
+        part_page.content = """
+        <html><body><h1>第一部分 科技创新的体系</h1></body></html>
+        """
+
+        real_chapter = epub.EpubHtml(
+            title="理解科技革命的本质",
+            file_name="chapter_1.xhtml",
+            lang="zh-CN",
+        )
+        real_chapter.content = """
+        <html><body>
+          <h1>理解科技革命的本质</h1>
+          <p>这是真实章节的正文。</p>
+        </body></html>
+        """
+
+        book.add_item(part_page)
+        book.add_item(real_chapter)
+        book.toc = (part_page, real_chapter)
+        book.spine = ["nav", part_page, real_chapter]
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
         epub.write_epub(str(target), book)

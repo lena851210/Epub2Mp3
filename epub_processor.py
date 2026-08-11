@@ -51,9 +51,14 @@ NON_AUDIO_TOC_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# “部分/卷/篇”类父级结构标题，尽量不单独导出
+# “部分/卷/篇”类父级结构标题，尽量不单独导出。
+# 书籍常见“第一部分 科技创新的体系”，“部分”需作为一个完整层级词识别。
 VOLUME_ONLY_RE = re.compile(
-    r"^\s*第[0-9一二三四五六七八九十百千万零〇两]+[部卷篇编册集]\s*$"
+    r"^\s*第[0-9一二三四五六七八九十百千万零〇两]+(?:部分|部|卷|篇|编|册|集)\s*$"
+)
+VOLUME_WITH_SUBTITLE_RE = re.compile(
+    r"^\s*第[0-9一二三四五六七八九十百千万零〇两]+(?:部分|部|卷|篇|编|册|集)"
+    r"(?:\s+|[：:\-—]\s*)[^。！？!?]{1,30}\s*$"
 )
 
 # 图题 / 表题 / 图片说明等，避免误判为章节
@@ -85,8 +90,8 @@ def is_volume_only_title(title: str) -> bool:
     if VOLUME_ONLY_RE.match(t):
         return True
 
-    # 允许少量后缀，但不要太长
-    if re.match(r"^\s*第[0-9一二三四五六七八九十百千万零〇两]+[部卷篇编册集][：:\-\s].{0,20}\s*$", t):
+    # 允许结构标题后带一个简短副标题，但不匹配完整句子。
+    if VOLUME_WITH_SUBTITLE_RE.match(t):
         return True
 
     return False
@@ -137,6 +142,10 @@ def split_chapter_by_internal_headings(ch: Dict[str, Any]) -> List[Dict[str, Any
                 "content": txt,
                 "hrefs": hrefs[:],
                 "toc_confirmed": bool(ch.get("toc_confirmed")),
+                # 父级结构标题只在拆分后的第一段开头朗读一次。
+                "structural_headings": (
+                    list(ch.get("structural_headings", []) or []) if not parts else []
+                ),
             })
         buf = []
 
@@ -180,7 +189,7 @@ def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     # 2) 合并/过滤短章节 + 卷标题处理
     result: List[Dict[str, Any]] = []
     i = 0
-    pending_volume_prefix = ""
+    pending_structural_headings: List[str] = []
 
     while i < len(expanded):
         ch = expanded[i]
@@ -188,27 +197,32 @@ def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         content = (ch.get("content") or "").strip()
         chars = _count_chars(content)
 
-        # “第一部分/第二卷”这类父级结构标题：不单独保留，作为后续章节前缀
+        # “第一部分/第二卷”这类父级结构标题：不单独保留，放到下一章的朗读开头。
         if title and is_volume_only_title(title):
             if chars < 1200:
-                pending_volume_prefix = title
+                for heading in list(ch.get("structural_headings", []) or []) + [title]:
+                    if heading and heading not in pending_structural_headings:
+                        pending_structural_headings.append(heading)
                 i += 1
                 continue
 
         # 丢弃：很短 + 标题疑似噪音页（目录/版权等）
         if chars < 800 and title and NOISE_TITLE_RE.search(title):
+            # 结构标题不应因紧跟一个被过滤页面而丢失。
+            for heading in list(ch.get("structural_headings", []) or []):
+                if heading and heading not in pending_structural_headings:
+                    pending_structural_headings.append(heading)
             i += 1
             continue
 
-        # 如果前面挂了一个“卷/部/篇”标题，就拼到当前真实章节标题上
-        if pending_volume_prefix:
-            if title:
-                if pending_volume_prefix not in title:
-                    title = f"{pending_volume_prefix} {title}".strip()
-                    ch["title"] = title
-            else:
-                ch["title"] = pending_volume_prefix
-            pending_volume_prefix = ""
+        # 保留真实章节的文件名，另外记录应在它前面朗读的父级标题。
+        if pending_structural_headings:
+            existing_headings = list(ch.get("structural_headings", []) or [])
+            ch["structural_headings"] = pending_structural_headings + [
+                heading for heading in existing_headings
+                if heading not in pending_structural_headings
+            ]
+            pending_structural_headings = []
 
         if (
             not ch.get("toc_confirmed")
@@ -223,6 +237,14 @@ def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
             nxt["content"] = normalize_whitespace((prefix + "\n\n" + (nxt.get("content") or "")).strip())
 
+            current_headings = list(ch.get("structural_headings", []) or [])
+            if current_headings:
+                next_headings = list(nxt.get("structural_headings", []) or [])
+                nxt["structural_headings"] = current_headings + [
+                    heading for heading in next_headings
+                    if heading not in current_headings
+                ]
+
             # 如果下一章标题很弱，而当前标题更像正式章节标题，可考虑把标题也传过去
             nxt_title = (nxt.get("title") or "").strip()
             if title and (not nxt_title or is_volume_only_title(nxt_title)):
@@ -234,7 +256,7 @@ def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         result.append(ch)
         i += 1
 
-    # 如果最后还有挂起的 volume prefix，通常说明它只是尾部孤立结构页，忽略即可
+    # 如果最后还有挂起的结构标题，通常说明它只是尾部孤立结构页，忽略即可。
     return result
 
 
@@ -795,7 +817,7 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
     spine = getattr(book, "spine", []) or []
     chapters: List[Dict[str, Any]] = []
     current = None
-    pending_volume_title = ""
+    pending_structural_headings: List[str] = []
 
     def should_merge_with_previous(prev_chapter, curr_chapter):
         """判断是否应合并到前一章"""
@@ -838,20 +860,28 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
 
     def finalize_current():
         """完成当前章节处理"""
-        nonlocal current, pending_volume_title
+        nonlocal current, pending_structural_headings
         if current:
             joined = "\n\n".join([t for t in current.get("texts", []) if t])
             content = normalize_whitespace(joined)
 
             title = (current.get("title") or "").strip()
 
-            # 先拼卷标题，但如果当前本身也是卷标题，则不重复拼
-            if pending_volume_title and title and not is_volume_only_title(title):
-                if pending_volume_title not in title:
-                    current["title"] = f"{pending_volume_title} {title}".strip()
-                pending_volume_title = ""
+            # 纯“第一部分”这类结构页，不单独入库，挂到后面的真实章节。
+            if title and is_volume_only_title(title) and _count_chars(content) < 1200:
+                for heading in list(current.get("structural_headings", []) or []) + [title]:
+                    if heading and heading not in pending_structural_headings:
+                        pending_structural_headings.append(heading)
+                current = None
+                return
 
-            title = (current.get("title") or "").strip()
+            if pending_structural_headings:
+                existing_headings = list(current.get("structural_headings", []) or [])
+                current["structural_headings"] = pending_structural_headings + [
+                    heading for heading in existing_headings
+                    if heading not in pending_structural_headings
+                ]
+                pending_structural_headings = []
 
             # 在章节正式入库前，统一清理"标题重复"
             if content:
@@ -862,16 +892,16 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
 
             current["content"] = content
 
-            # 纯“第一部分”这类结构页，不单独入库，挂到后面章节
-            if title and is_volume_only_title(title) and _count_chars(content) < 1200:
-                pending_volume_title = title
-                current = None
-                return
-
             if len(chapters) > 0 and should_merge_with_previous(chapters[-1], current):
                 previous = chapters[-1]
+                current_content = current.get("content", "")
+                current_headings = list(current.get("structural_headings", []) or [])
+                if current_headings:
+                    current_content = normalize_whitespace(
+                        "\n\n".join(current_headings) + "\n\n" + current_content
+                    )
                 previous["content"] = normalize_whitespace(
-                    previous.get("content", "") + "\n\n" + current.get("content", "")
+                    previous.get("content", "") + "\n\n" + current_content
                 )
                 previous["hrefs"].extend(current.get("hrefs", []))
                 if current.get("title") and len(current["title"]) > len(previous.get("title", "")):
@@ -951,7 +981,8 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
         if effective_toc_title and is_volume_only_title(effective_toc_title) and text_len < 1200:
             if current:
                 finalize_current()
-            pending_volume_title = effective_toc_title
+            if effective_toc_title not in pending_structural_headings:
+                pending_structural_headings.append(effective_toc_title)
             continue
 
         # 2) 正式 TOC 章节：开新章
@@ -1054,6 +1085,21 @@ def convert_epub_to_txt(
     total_chapters = len(chapters)
     converted_count = 0  # 生成的 TXT 文件数
 
+    def build_txt_header(chapter: Dict[str, Any], chapter_title: str, include_structure: bool = True) -> str:
+        """组装 TXT 开头：父级结构标题 -> 真实章节标题。"""
+        headings = list(chapter.get("structural_headings", []) or []) if include_structure else []
+        headings.append(chapter_title)
+
+        unique_headings: List[str] = []
+        seen = set()
+        for heading in headings:
+            normalized_heading = normalize_whitespace(str(heading or "")).strip()
+            key = _heading_compare_key(normalized_heading)
+            if normalized_heading and key and key not in seen:
+                unique_headings.append(normalized_heading)
+                seen.add(key)
+        return "\n\n".join(unique_headings)
+
     def split_by_limit(content: str, limit: int) -> List[str]:
         """把超长 content 切成多个 part（尽量在段落/句末切）"""
         parts: List[str] = []
@@ -1131,7 +1177,7 @@ def convert_epub_to_txt(
                 try:
                     with open(out_path, "w", encoding="utf-8") as f:
                         header = raw_title if split_total <= 1 else f"{raw_title}（第{part_num}部分）"
-                        f.write(header + "\n\n")
+                        f.write(build_txt_header(ch, header, include_structure=(part_num == 1)) + "\n\n")
                         f.write(part_content if part_content else "(本章无可提取正文)")
                     converted_count += 1
                 except Exception as e:
@@ -1151,7 +1197,7 @@ def convert_epub_to_txt(
 
             try:
                 with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(raw_title + "\n\n")
+                    f.write(build_txt_header(ch, raw_title) + "\n\n")
                     f.write(content2 if content2 else "(本章无可提取正文)")
                 converted_count += 1
                 file_counter += 1
