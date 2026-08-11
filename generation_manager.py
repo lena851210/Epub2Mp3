@@ -10,6 +10,7 @@ from typing import List, Tuple, Optional
 from tkinter import messagebox
 
 from audio_processor import _process_audio_chunk, find_existing_outputs_for_txt
+from epub_processor import find_saved_epub_cover
 
 
 def classify_task_status(status_text: str) -> Optional[str]:
@@ -369,6 +370,7 @@ class GenerationMixin:
             return
 
         os.makedirs(out_dir, exist_ok=True)
+        self.current_cover_path = find_saved_epub_cover(txt_dir)
 
         files = list(getattr(self, "task_files", []))
         if not files:
@@ -438,6 +440,7 @@ class GenerationMixin:
                 seconds_to_str=self.seconds_to_str,
                 stop_flag_check=lambda: self.stop_flag,
                 tts_with_retry=self.tts_with_retry,
+                cover_path=self.current_cover_path,
                 split_total=1
             )
 
@@ -505,6 +508,7 @@ class GenerationMixin:
                         seconds_to_str=self.seconds_to_str,
                         stop_flag_check=lambda: self.stop_flag,
                         tts_with_retry=self.tts_with_retry,
+                        cover_path=self.current_cover_path,
                         split_total=split_total
                     )
             else:
@@ -524,7 +528,8 @@ class GenerationMixin:
                     get_mp3_duration_str=self.get_mp3_duration_str,
                     seconds_to_str=self.seconds_to_str,
                     stop_flag_check=lambda: self.stop_flag,
-                    tts_with_retry=self.tts_with_retry
+                    tts_with_retry=self.tts_with_retry,
+                    cover_path=self.current_cover_path,
                 )
 
     def generate_merged_files(self, files: List[str], txt_dir: str, out_dir: str):
@@ -567,7 +572,8 @@ class GenerationMixin:
                         get_mp3_duration_str=self.get_mp3_duration_str,
                         seconds_to_str=self.seconds_to_str,
                         stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry
+                        tts_with_retry=self.tts_with_retry,
+                        cover_path=self.current_cover_path,
                     )
                     part_num += 1
                     current_text = ""
@@ -597,6 +603,7 @@ class GenerationMixin:
                         seconds_to_str=self.seconds_to_str,
                         stop_flag_check=lambda: self.stop_flag,
                         tts_with_retry=self.tts_with_retry,
+                        cover_path=self.current_cover_path,
                         split_total=split_total
                     )
                     part_num += 1
@@ -626,7 +633,8 @@ class GenerationMixin:
                         get_mp3_duration_str=self.get_mp3_duration_str,
                         seconds_to_str=self.seconds_to_str,
                         stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry
+                        tts_with_retry=self.tts_with_retry,
+                        cover_path=self.current_cover_path,
                     )
                     part_num += 1
 
@@ -651,5 +659,6 @@ class GenerationMixin:
                 get_mp3_duration_str=self.get_mp3_duration_str,
                 seconds_to_str=self.seconds_to_str,
                 stop_flag_check=lambda: self.stop_flag,
-                tts_with_retry=self.tts_with_retry
+                tts_with_retry=self.tts_with_retry,
+                cover_path=self.current_cover_path,
             )

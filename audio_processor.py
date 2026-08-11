@@ -5,8 +5,10 @@
 
 import os
 import re
-import time
 import shutil
+import subprocess
+import tempfile
+import time
 from typing import List, Tuple, Optional
 
 from pydub import AudioSegment
@@ -231,6 +233,76 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
     return final
 
 
+def embed_cover_art(mp3_path: str, cover_path: str) -> bool:
+    """
+    使用 FFmpeg 给最终 MP3 写入封面。
+
+    先生成临时文件，成功后再替换原音频；失败时保留原 MP3 不变。
+    """
+    if not mp3_path or not cover_path:
+        return False
+    if not os.path.isfile(mp3_path) or not os.path.isfile(cover_path):
+        return False
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return False
+
+    temp_file = tempfile.NamedTemporaryFile(
+        prefix="__cover_",
+        suffix=".mp3",
+        dir=os.path.dirname(mp3_path) or ".",
+        delete=False,
+    )
+    temp_path = temp_file.name
+    temp_file.close()
+
+    try:
+        subprocess.run(
+            [
+                ffmpeg_path,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                mp3_path,
+                "-i",
+                cover_path,
+                "-map",
+                "0:a:0",
+                "-map",
+                "1:v:0",
+                "-c:a",
+                "copy",
+                "-c:v",
+                "mjpeg",
+                "-id3v2_version",
+                "3",
+                "-metadata:s:v",
+                "title=Album cover",
+                "-metadata:s:v",
+                "comment=Cover (front)",
+                "-disposition:v",
+                "attached_pic",
+                temp_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        if not os.path.isfile(temp_path) or os.path.getsize(temp_path) <= 0:
+            return False
+        os.replace(temp_path, mp3_path)
+        return True
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
 # ====== 【函数2】音频处理核心函数 ======
 def _process_audio_chunk(
     text,
@@ -250,6 +322,7 @@ def _process_audio_chunk(
     stop_flag_check,
     tts_with_retry,
     split_total: int = 1,
+    cover_path: Optional[str] = None,
 ):
     """
     处理一个音频块（包含文本合成和音频合并）
@@ -343,9 +416,27 @@ def _process_audio_chunk(
                     except Exception:
                         pass
 
+            cover_embedded = None
+            if cover_path:
+                for name in file_list:
+                    set_file_status(name, "正在写入书籍封面...", spinning=(name == leader))
+                cover_embedded = embed_cover_art(opath, cover_path)
+
+            status_details = []
+            if dur_str:
+                status_details.append(f"时长{dur_str}")
+            if cover_embedded is True:
+                status_details.append("含封面")
+            elif cover_embedded is False:
+                status_details.append("封面未写入")
+
+            completed_status = "已完成"
+            if status_details:
+                completed_status += f"（{'，'.join(status_details)}）"
+
             for name in file_list:
                 set_file_progress(name, 100.0)
-                set_file_status(name, f"已完成（时长{dur_str}）" if dur_str else "已完成", spinning=False)
+                set_file_status(name, completed_status, spinning=False)
 
             return opath
 

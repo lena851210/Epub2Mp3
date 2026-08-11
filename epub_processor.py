@@ -10,9 +10,11 @@ from urllib.parse import unquote
 
 from ebooklib import epub
 try:
-    from ebooklib import ITEM_DOCUMENT
+    from ebooklib import ITEM_COVER, ITEM_DOCUMENT, ITEM_IMAGE
 except Exception:
+    ITEM_COVER = getattr(epub, "ITEM_COVER", None)
     ITEM_DOCUMENT = getattr(epub, "ITEM_DOCUMENT", None)
+    ITEM_IMAGE = getattr(epub, "ITEM_IMAGE", None)
 
 from models import (
     normalize_whitespace,
@@ -22,6 +24,9 @@ from models import (
 
 # 全局变量：最后输出目录
 last_output_dir = None
+
+SAVED_COVER_BASENAME = ".epub-to-mp3-cover"
+SAVED_COVER_EXTENSIONS = (".jpg", ".png", ".webp")
 
 # ====== EPUB->TXT 后处理规则（可调参数） ======
 
@@ -483,6 +488,116 @@ def get_item_bytes(item) -> bytes:
     return b""
 
 
+def _cover_extension(item, content: bytes) -> str:
+    """根据图片内容和 EPUB 元数据确定封面文件扩展名。"""
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return ".webp"
+
+    media_type = str(getattr(item, "media_type", "") or "").lower()
+    if "jpeg" in media_type or "jpg" in media_type:
+        return ".jpg"
+    if "png" in media_type:
+        return ".png"
+    if "webp" in media_type:
+        return ".webp"
+
+    file_name = str(getattr(item, "file_name", "") or "").lower()
+    extension = os.path.splitext(file_name)[1]
+    if extension == ".jpeg":
+        return ".jpg"
+    if extension in SAVED_COVER_EXTENSIONS:
+        return extension
+    return ""
+
+
+def _find_epub_cover_item(book: epub.EpubBook):
+    """优先查找 EPUB 明确标记的封面图片。"""
+    if ITEM_COVER is not None:
+        try:
+            cover_items = list(book.get_items_of_type(ITEM_COVER))
+            if cover_items:
+                return cover_items[0]
+        except Exception:
+            pass
+
+    # 兼容少量没有正确声明 ITEM_COVER、但属性或 ID 明确写着 cover 的 EPUB。
+    try:
+        for item in book.get_items():
+            try:
+                item_type = item.get_type()
+            except Exception:
+                item_type = None
+            if ITEM_IMAGE is not None and item_type != ITEM_IMAGE:
+                continue
+
+            properties = getattr(item, "properties", None) or []
+            if isinstance(properties, str):
+                properties = [properties]
+            property_text = " ".join(str(value) for value in properties).lower()
+            identity = " ".join(
+                str(value or "")
+                for value in (
+                    getattr(item, "id", ""),
+                    getattr(item, "file_name", ""),
+                )
+            ).lower()
+            if "cover-image" in property_text or "cover" in identity:
+                return item
+    except Exception:
+        pass
+    return None
+
+
+def save_epub_cover(book: epub.EpubBook, output_dir: str) -> Optional[str]:
+    """
+    把 EPUB 封面保存为 TXT 目录中的隐藏生成文件，供后续 MP3 使用。
+
+    无封面或格式不支持时返回 None，不影响正文转换。
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 这些文件由本程序生成。先清理可避免重新导入无封面 EPUB 时误用旧图。
+    for extension in SAVED_COVER_EXTENSIONS:
+        stale_path = os.path.join(output_dir, SAVED_COVER_BASENAME + extension)
+        if os.path.isfile(stale_path):
+            try:
+                os.remove(stale_path)
+            except Exception:
+                pass
+
+    cover_item = _find_epub_cover_item(book)
+    if cover_item is None:
+        return None
+
+    content = get_item_bytes(cover_item)
+    extension = _cover_extension(cover_item, content)
+    if not content or not extension:
+        return None
+
+    cover_path = os.path.join(output_dir, SAVED_COVER_BASENAME + extension)
+    try:
+        with open(cover_path, "wb") as cover_file:
+            cover_file.write(content)
+        return cover_path
+    except Exception:
+        return None
+
+
+def find_saved_epub_cover(txt_dir: str) -> Optional[str]:
+    """查找导入 EPUB 时保存的封面图片。"""
+    if not txt_dir or not os.path.isdir(txt_dir):
+        return None
+    for extension in SAVED_COVER_EXTENSIONS:
+        cover_path = os.path.join(txt_dir, SAVED_COVER_BASENAME + extension)
+        if os.path.isfile(cover_path) and os.path.getsize(cover_path) > 0:
+            return cover_path
+    return None
+
+
 # ====== 【函数3】获取元素 href ======
 def get_item_href_key(item) -> str:
     """获取 EPUB 元素的 href 键"""
@@ -913,6 +1028,10 @@ def convert_epub_to_txt(
 
     out_dir = os.path.splitext(epub_path)[0] + "_txt"
     os.makedirs(out_dir, exist_ok=True)
+
+    cover_path = save_epub_cover(book, out_dir)
+    if progress_callback and cover_path:
+        progress_callback("已提取书籍封面，稍后将写入 MP3...")
 
     if progress_callback:
         progress_callback("正在解析EPUB结构...")

@@ -36,7 +36,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.duration_estimator = DurationEstimator(BASE_WORDS_PER_MINUTE)
 
         self.root = tk.Tk()
-        self.root.title("有声书生成工具 (Edge TTS) - 优化版 v3.0")
+        self.root.title("EPUB to MP3 - V2.0")
         self.root.geometry("960x680")
         self.root.minsize(720, 560)
         self.stop_flag = False

@@ -5,7 +5,11 @@ from pathlib import Path
 
 from ebooklib import epub
 
-from epub_processor import convert_epub_to_txt, remove_leading_title_from_text
+from epub_processor import (
+    convert_epub_to_txt,
+    find_saved_epub_cover,
+    remove_leading_title_from_text,
+)
 
 
 class EpubProcessorTests(unittest.TestCase):
@@ -26,6 +30,10 @@ class EpubProcessorTests(unittest.TestCase):
             self.assertEqual(len(txt_files), 2)
             self.assertIn("第一章 出发", txt_files[0].name)
             self.assertIn("第二章 抵达", txt_files[1].name)
+
+            cover_path = find_saved_epub_cover(out_dir)
+            self.assertIsNotNone(cover_path)
+            self.assertEqual(Path(cover_path).read_bytes(), self._sample_cover_bytes())
 
             first_text = txt_files[0].read_text(encoding="utf-8")
             second_text = txt_files[1].read_text(encoding="utf-8")
@@ -88,6 +96,7 @@ class EpubProcessorTests(unittest.TestCase):
         book.set_identifier("short-toc-chapters-test")
         book.set_title("短章节测试")
         book.set_language("zh-CN")
+        book.set_cover("cover.jpg", EpubProcessorTests._sample_cover_bytes())
 
         chapter_one = epub.EpubHtml(
             title="第一章 出发",
@@ -121,6 +130,11 @@ class EpubProcessorTests(unittest.TestCase):
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
         epub.write_epub(str(target), book)
+
+    @staticmethod
+    def _sample_cover_bytes() -> bytes:
+        # EPUB 写入和封面提取只需要保留原始图片字节；无需在单元测试中解码图片。
+        return b"\xff\xd8\xff\xe0epub-to-mp3-test-cover\xff\xd9"
 
     @staticmethod
     def _build_anchor_toc_epub(target: Path):
