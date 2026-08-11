@@ -6,6 +6,7 @@
 import os
 import re
 from typing import Dict, Any, List, Tuple, Optional, Callable
+from urllib.parse import unquote
 
 from ebooklib import epub
 try:
@@ -36,6 +37,13 @@ MIN_CHAPTER_CHARS = 350
 NOISE_TITLE_RE = re.compile(
     r"(目录|封面|版权|扉页|出版|前言|序|推荐|致谢|引言|插图|图表|索引)",
     re.IGNORECASE
+)
+
+# 明确不适合作为音频章节的 EPUB 目录项。
+# 前言、序言、致谢等仍可能有收听价值，不在这里一刀切删除。
+NON_AUDIO_TOC_TITLE_RE = re.compile(
+    r"^\s*(封面|封底|扉页|书名页|版权(?:信息)?|目录)\s*$",
+    re.IGNORECASE,
 )
 
 # “部分/卷/篇”类父级结构标题，尽量不单独导出
@@ -321,6 +329,133 @@ def build_leaf_toc_map(book: epub.EpubBook) -> Dict[str, str]:
     return href2title
 
 
+def build_leaf_toc_entries(book: epub.EpubBook) -> List[Dict[str, str]]:
+    """
+    按原书顺序提取 TOC 叶子章节，并保留 href 中的锚点。
+
+    很多 EPUB 会把多篇文章放在同一个 HTML 文件中，依靠
+    ``chapter.html#section-2`` 区分章节。锚点不能像旧逻辑那样丢弃。
+    """
+    entries: List[Dict[str, str]] = []
+
+    def walk(items):
+        if not items:
+            return
+
+        # ebooklib 用 (Section, [children]) 表示有子目录的父级。
+        # 父级只负责分组，真正输出音频的是它下面的叶子章节。
+        if (
+            isinstance(items, tuple)
+            and len(items) == 2
+            and isinstance(items[1], (list, tuple))
+        ):
+            walk(items[1])
+            return
+
+        if isinstance(items, (list, tuple)):
+            for item in items:
+                walk(item)
+            return
+
+        try:
+            subitems = (
+                getattr(items, "subitems", None)
+                or getattr(items, "children", None)
+                or getattr(items, "items", None)
+                or []
+            )
+            if subitems:
+                walk(subitems)
+                return
+
+            href = str(getattr(items, "href", None) or "").strip()
+            title = normalize_whitespace(getattr(items, "title", None) or "").strip()
+            if href and title:
+                entries.append({"href": href, "title": title})
+        except Exception:
+            return
+
+    try:
+        walk(book.toc or [])
+    except Exception:
+        pass
+
+    return entries
+
+
+def _split_toc_href(href: str) -> Tuple[str, str]:
+    decoded = unquote(str(href or "").strip())
+    file_href, separator, fragment = decoded.partition("#")
+    while file_href.startswith("./"):
+        file_href = file_href[2:]
+    return file_href, fragment if separator else ""
+
+
+def _is_non_audio_toc_title(title: str) -> bool:
+    return bool(NON_AUDIO_TOC_TITLE_RE.match(normalize_whitespace(title or "")))
+
+
+def _find_fragment_tag_start(html: str, fragment: str) -> Optional[int]:
+    if not fragment:
+        body_match = re.search(r"<body\b[^>]*>", html, flags=re.IGNORECASE)
+        return body_match.end() if body_match else 0
+
+    escaped = re.escape(fragment)
+    pattern = re.compile(
+        rf"<[^>]*\b(?:id|name)\s*=\s*(?:[\"']{escaped}[\"']|{escaped}(?=[\s>]))[^>]*>",
+        flags=re.IGNORECASE,
+    )
+    match = pattern.search(html)
+    return match.start() if match else None
+
+
+def extract_toc_anchor_segments(
+    html_bytes: bytes,
+    entries: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """按同一 HTML 文件中的 TOC 锚点切出独立章节正文。"""
+    if not html_bytes or not entries:
+        return []
+
+    html = html_bytes.decode("utf-8", errors="ignore")
+    located: List[Tuple[int, Dict[str, str]]] = []
+
+    for entry in entries:
+        _, fragment = _split_toc_href(entry.get("href", ""))
+        start = _find_fragment_tag_start(html, fragment)
+        if start is None:
+            continue
+        located.append((start, entry))
+
+    # 多目录项时必须全部定位成功，否则宁可回退旧流程，也不要静默丢章。
+    if len(entries) > 1 and len(located) != len(entries):
+        return []
+
+    # 同一个无锚点地址无法可靠切成多章。
+    positions = [position for position, _ in located]
+    if len(set(positions)) != len(positions):
+        return []
+
+    located.sort(key=lambda item: item[0])
+    body_end_match = re.search(r"</body\s*>", html, flags=re.IGNORECASE)
+    document_end = body_end_match.start() if body_end_match else len(html)
+    segments: List[Dict[str, str]] = []
+
+    for index, (start, entry) in enumerate(located):
+        end = located[index + 1][0] if index + 1 < len(located) else document_end
+        segment_html = f"<html><body>{html[start:end]}</body></html>"
+        _, text = clean_text_from_html_bytes(segment_html.encode("utf-8"))
+        segments.append(
+            {
+                "title": entry.get("title", ""),
+                "content": text,
+                "href": entry.get("href", ""),
+            }
+        )
+
+    return segments
+
+
 # ====== 【函数2】获取元素字节 ======
 def get_item_bytes(item) -> bytes:
     """获取 EPUB 元素的字节内容"""
@@ -364,6 +499,19 @@ def get_item_href_key(item) -> str:
 
 
 # ====== 【函数4】移除开头标题 ======
+def _heading_compare_key(text: str) -> str:
+    """
+    生成仅用于标题比较的文本。
+
+    EPUB 中常混用普通空格、全角空格和不同的标题标点。
+    这些排版差异不应导致同一个标题被 TTS 连续朗读两遍。
+    """
+    normalized = normalize_whitespace(text or "").strip()
+    normalized = re.sub(r"\s+", "", normalized)
+    normalized = re.sub(r"[:：\-_—–·\(\)（）\[\]【】<>《》\"'“”‘’]+", "", normalized)
+    return normalized.casefold()
+
+
 def remove_leading_title_from_text(title: str, text: str) -> str:
     """
     从文本中移除开头重复的标题
@@ -377,6 +525,11 @@ def remove_leading_title_from_text(title: str, text: str) -> str:
     if not norm_title or not norm_text:
         return text
 
+    title_key = _heading_compare_key(norm_title)
+    first_paragraph, separator, remaining_text = norm_text.partition("\n\n")
+    if separator and title_key and _heading_compare_key(first_paragraph) == title_key:
+        return remaining_text.lstrip()
+
     if norm_text.startswith(norm_title):
         title_end_pos = len(norm_title)
         while title_end_pos < len(norm_text) and norm_text[title_end_pos] in " :：.-_———·\n\r\t":
@@ -388,11 +541,8 @@ def remove_leading_title_from_text(title: str, text: str) -> str:
         return result
 
     lines = norm_text.split('\n')
-    if len(lines) > 1 and normalize_whitespace(lines[0]) == norm_title:
-        result = '\n'.join(lines[1:]).lstrip()
-        if len(result) < len(norm_text) * 0.3:
-            return text
-        return result
+    if len(lines) > 1 and _heading_compare_key(lines[0]) == title_key:
+        return '\n'.join(lines[1:]).lstrip()
 
     if len(lines) > 1:
         first_line_clean = re.sub(r'^\d+\s*', '', normalize_whitespace(lines[0]))
@@ -426,19 +576,13 @@ def dedupe_adjacent_paragraphs(text: str, title: str = "", scan_first_n: int = 1
         return text
 
     norm_title = normalize_whitespace(title).strip()
-
-    def _simplify(s: str) -> str:
-        s = normalize_whitespace(s).strip()
-        s = re.sub(r"[ \t:：\-_—·\(\)\[\]【】<>《》\"']+", "", s)
-        return s
-
-    simp_title = _simplify(norm_title) if norm_title else ""
+    simp_title = _heading_compare_key(norm_title) if norm_title else ""
 
     cleaned = []
     prev_s = None
 
     for i, p in enumerate(paras):
-        sp = _simplify(p)
+        sp = _heading_compare_key(p)
 
         if prev_s is not None and sp == prev_s:
             continue
@@ -460,8 +604,7 @@ def remove_redundant_heading_lines(text: str, title: str = "", scan_first_lines:
         return text
 
     def simplify(s: str) -> str:
-        s = normalize_whitespace(s).strip()
-        s = re.sub(r"[ \t:：\-_—·\(\)\[\]【】<>《》\"']+", "", s)
+        s = _heading_compare_key(s)
         s = re.sub(r"第[0-9一二三四五六七八九十百千万零〇两]+([章节回卷篇部])", r"第X\1", s)
         return s
 
@@ -528,6 +671,12 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
     """
     href_title_map = build_toc_map(book)
     leaf_toc_map = build_leaf_toc_map(book)
+    leaf_toc_entries = build_leaf_toc_entries(book)
+    toc_entries_by_file: Dict[str, List[Dict[str, str]]] = {}
+    for entry in leaf_toc_entries:
+        file_href, _ = _split_toc_href(entry.get("href", ""))
+        if file_href:
+            toc_entries_by_file.setdefault(file_href, []).append(entry)
     spine = getattr(book, "spine", []) or []
     chapters: List[Dict[str, Any]] = []
     current = None
@@ -641,6 +790,37 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
         content_bytes = get_item_bytes(item)
         if not content_bytes:
             continue
+
+        file_toc_entries = toc_entries_by_file.get(href, [])
+        if file_toc_entries:
+            audible_entries = [
+                entry
+                for entry in file_toc_entries
+                if not _is_non_audio_toc_title(entry.get("title", ""))
+            ]
+
+            # 如果这个文档只包含封面、版权或目录，整份跳过。
+            if not audible_entries:
+                continue
+
+            toc_segments = extract_toc_anchor_segments(content_bytes, file_toc_entries)
+            if toc_segments:
+                if current:
+                    finalize_current()
+
+                for segment in toc_segments:
+                    title = (segment.get("title") or "").strip()
+                    if _is_non_audio_toc_title(title):
+                        continue
+
+                    current = {
+                        "title": title,
+                        "texts": [segment.get("content", "")],
+                        "hrefs": [segment.get("href", href)],
+                        "toc_confirmed": True,
+                    }
+                    finalize_current()
+                continue
 
         soup_title, text = clean_text_from_html_bytes(content_bytes)
         text = normalize_whitespace(text or "")
