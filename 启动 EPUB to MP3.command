@@ -38,7 +38,7 @@ if [ ! -x "$VENV_PYTHON" ]; then
 fi
 
 if ! "$VENV_PYTHON" -c \
-  "import tkinter, ebooklib, bs4, lxml, pydub, edge_tts, main" \
+  "import tkinter, tkinterdnd2, ebooklib, bs4, lxml, pydub, edge_tts, main" \
   >/dev/null 2>&1; then
   echo "检测到运行环境不完整，正在自动修复..."
   prepare_environment
@@ -49,7 +49,7 @@ if [ ! -x "$VENV_PYTHON" ]; then
 fi
 
 if ! "$VENV_PYTHON" -c \
-  "import tkinter, ebooklib, bs4, lxml, pydub, edge_tts, main" \
+  "import tkinter, tkinterdnd2, ebooklib, bs4, lxml, pydub, edge_tts, main" \
   >/dev/null 2>&1; then
   pause_on_error "依赖检查未通过。"
 fi

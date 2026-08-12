@@ -50,11 +50,11 @@ fi
 
 # 4. 升级 pip
 echo "正在升级 pip ..."
-pip install --upgrade pip
+python -m pip install --upgrade pip
 
 # 5. 安装 Python 依赖
 echo "正在根据 requirements.txt 安装项目依赖..."
-pip install -r "${PROJECT_DIR}/requirements.txt"
+python -m pip install -r "${PROJECT_DIR}/requirements.txt"
 
 echo "依赖安装完成。"
 

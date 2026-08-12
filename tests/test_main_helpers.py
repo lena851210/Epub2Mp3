@@ -1,11 +1,26 @@
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
 from main import AudiobookGenerator
 
 
 class MainHelperTests(unittest.TestCase):
+    def test_drop_paths_keep_spaces_and_chinese_names(self):
+        root = Mock()
+        root.tk.splitlist.return_value = (
+            "/tmp/一本 书.epub",
+            "/tmp/第二本.epub",
+        )
+
+        paths = AudiobookGenerator.parse_drop_paths(
+            root,
+            "{/tmp/一本 书.epub} /tmp/第二本.epub",
+        )
+
+        self.assertEqual(paths, ["/tmp/一本 书.epub", "/tmp/第二本.epub"])
+
     def test_no_audio_error_is_translated_to_actionable_chinese(self):
         message = AudiobookGenerator.format_tts_error(
             RuntimeError(

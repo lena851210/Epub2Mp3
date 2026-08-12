@@ -26,6 +26,12 @@ from epub_processor import convert_epub_to_txt
 from generation_manager import GenerationMixin
 from file_manager import FileManagerMixin, display_task_progress, display_task_status
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
+
 
 class AudiobookGenerator(FileManagerMixin, GenerationMixin):
     """有声书生成工具 - 主应用类"""
@@ -35,7 +41,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.edge = EdgeTTSWrapper()
         self.duration_estimator = DurationEstimator(BASE_WORDS_PER_MINUTE)
 
-        self.root = tk.Tk()
+        self.root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
         self.root.title("EPUB to MP3 - V2.0")
         self.root.geometry("960x680")
         self.root.minsize(720, 560)
@@ -43,6 +49,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.is_generating = False
         self.generation_thread = None
         self.is_previewing = False
+        self.is_importing_epub = False
         self.task_files = []
         self.task_statuses = {}
         self.task_progress = {}
@@ -64,6 +71,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.last_dir_snapshot = None
 
         self.create_ui()
+        self._setup_epub_drop()
         self._start_dir_watch()
 
     def _get_config_path(self) -> str:
@@ -874,18 +882,78 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         self._open_directory_path(out_dir)
 
+    @staticmethod
+    def parse_drop_paths(root, raw_data: str):
+        """解析 Finder / Explorer 拖放数据，兼容中文、空格和多文件。"""
+        if not raw_data:
+            return []
+        try:
+            return [str(path) for path in root.tk.splitlist(raw_data) if str(path).strip()]
+        except Exception:
+            return [str(raw_data).strip()] if str(raw_data).strip() else []
+
+    def _setup_epub_drop(self):
+        """让整个主窗口接收 EPUB 文件拖放。"""
+        if DND_FILES is None or not hasattr(self.root, "drop_target_register"):
+            return
+        try:
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind("<<DragEnter>>", self._on_epub_drag_enter)
+            self.root.dnd_bind("<<DragLeave>>", self._on_epub_drag_leave)
+            self.root.dnd_bind("<<Drop>>", self._on_epub_drop)
+        except Exception as e:
+            print(f"文件拖放初始化失败: {e}")
+
+    def _on_epub_drag_enter(self, _event):
+        if self.is_generating or self.is_importing_epub:
+            self.set_status("当前任务进行中，暂时不能导入新的 EPUB")
+        else:
+            self.set_status("松开以导入 EPUB")
+        return "copy"
+
+    def _on_epub_drag_leave(self, _event):
+        if not self.is_generating and not self.is_importing_epub:
+            self.set_status("就绪")
+
+    def _on_epub_drop(self, event):
+        paths = self.parse_drop_paths(self.root, getattr(event, "data", ""))
+        if self.is_generating or self.is_importing_epub:
+            messagebox.showwarning("暂时无法导入", "当前任务进行中，请等待完成或停止后再拖入 EPUB。")
+            return "break"
+        if len(paths) != 1:
+            messagebox.showwarning("无法导入", "一次请只拖入一本 EPUB。")
+            self.set_status("一次请只拖入一本 EPUB")
+            return "break"
+        self._import_epub_path(paths[0])
+        return "break"
+
     def import_epub(self):
-        """导入 EPUB 文件"""
+        """通过文件选择器导入 EPUB。"""
+        if self.is_generating or self.is_importing_epub:
+            messagebox.showwarning("暂时无法导入", "当前任务进行中，请等待完成或停止后再导入 EPUB。")
+            return
         path = filedialog.askopenfilename(
             title="选择 EPUB",
             filetypes=[("EPUB 文件", "*.epub"), ("所有文件", "*.*")]
         )
         if not path:
             return
+        self._import_epub_path(path)
+
+    def _import_epub_path(self, path: str):
+        """处理已选定的 EPUB 路径；按钮与拖放共用同一转换入口。"""
+        path = os.path.abspath(os.path.expanduser(str(path or "").strip()))
         if not path.lower().endswith(".epub"):
-            messagebox.showerror("格式错误", "请选择 .epub 文件")
+            messagebox.showerror("格式错误", "只支持导入 .epub 文件。")
+            self.set_status("导入失败：不是 EPUB 文件")
+            return
+        if not os.path.isfile(path):
+            messagebox.showerror("文件不存在", "未找到拖入的 EPUB 文件。")
+            self.set_status("导入失败：文件不存在")
             return
 
+        self.is_importing_epub = True
+        self.update_action_buttons_state()
         try:
             self.set_status("正在从EPUB提取章节文本…")
             max_chars_per_file = 200000
@@ -907,6 +975,9 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         except Exception as e:
             messagebox.showerror("EPUB转换失败", str(e))
             self.set_status("EPUB转换失败")
+        finally:
+            self.is_importing_epub = False
+            self.update_action_buttons_state()
 
     def on_closing(self):
         """窗口关闭时保存配置"""

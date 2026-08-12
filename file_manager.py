@@ -175,11 +175,13 @@ class FileManagerMixin:
                     has_real_txt_files = False
 
             is_generating = bool(getattr(self, "is_generating", False))
+            is_importing_epub = bool(getattr(self, "is_importing_epub", False))
             can_start = (
                 has_txt_dir
                 and has_files_in_tree
                 and has_real_txt_files
                 and not is_generating
+                and not is_importing_epub
             )
 
             if hasattr(self, "start_btn"):
@@ -193,7 +195,7 @@ class FileManagerMixin:
             if hasattr(self, "import_epub_btn"):
                 self._set_primary_button_state(
                     self.import_epub_btn,
-                    not is_generating
+                    not is_generating and not is_importing_epub
                 )
 
         except Exception:
