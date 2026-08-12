@@ -284,8 +284,41 @@ def safe_node_attrs(node: Any) -> str:
 
 def looks_like_noise(node: Any) -> bool:
     """判断节点是否为噪音（脚注等）"""
+    # 不少 EPUB 会给正文标题加上 sigil_toc_id_x 锚点。
+    # 它们是“目录定位到正文”的标记，不是目录噪音。
+    try:
+        if getattr(node, "name", "") in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            return False
+        if isinstance(node, Tag) and node.find_parent(("h1", "h2", "h3", "h4", "h5", "h6")):
+            return False
+    except Exception:
+        pass
+
     attrs = safe_node_attrs(node)
     return any(k in attrs for k in NOISE_KEYWORDS)
+
+
+def remove_image_only_captions(soup: BeautifulSoup):
+    """移除只为相邻图片服务的简短图注。
+
+    只处理“图片后紧跟 + 以 ▲/△ 开头”的明确结构，
+    避免按字数删除正文中有意义的短句。
+    """
+    for image in list(soup.find_all("img")):
+        try:
+            image_block = image.parent if isinstance(image.parent, Tag) else image
+            caption = image_block.find_next_sibling()
+            while isinstance(caption, NavigableString) and not str(caption).strip():
+                caption = caption.next_sibling
+
+            if not isinstance(caption, Tag):
+                continue
+
+            caption_text = text_of(caption).strip()
+            if caption_text.startswith(("▲", "△")) and len(caption_text) <= 80:
+                caption.decompose()
+        except Exception:
+            continue
 
 
 def prepare_soup(html: str) -> BeautifulSoup:
@@ -296,6 +329,9 @@ def prepare_soup(html: str) -> BeautifulSoup:
         warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
         soup = BeautifulSoup(html, "lxml")
     
+    # 图片本身会在下一步删除，先借助它与图注的位置关系过滤无意义朗读。
+    remove_image_only_captions(soup)
+
     # 删除不需要的标签
     for t in list(soup.find_all(REMOVE_TAGS)):
         try:

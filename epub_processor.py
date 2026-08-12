@@ -111,6 +111,35 @@ def is_caption_like_text(text: str) -> bool:
     return False
 
 
+def structural_headings_from_page(title: str, content: str) -> List[str]:
+    """保留结构页中除主标题以外的简短副标题。"""
+    headings: List[str] = []
+
+    def append_unique(value: str):
+        normalized = normalize_whitespace(value or "").strip()
+        key = _heading_compare_key(normalized)
+        if not normalized or not key:
+            return
+        if any(_heading_compare_key(existing) == key for existing in headings):
+            return
+        headings.append(normalized)
+
+    append_unique(title)
+    title_key = _heading_compare_key(title)
+
+    for paragraph in [p.strip() for p in (content or "").split("\n\n") if p.strip()]:
+        paragraph_key = _heading_compare_key(paragraph)
+        if not paragraph_key or paragraph_key == title_key:
+            continue
+        # 目录标题可能是“第一部分 + 主题”，HTML 内则只有“第一部分”。
+        if paragraph_key in title_key:
+            continue
+        if _count_chars(paragraph) <= 80:
+            append_unique(paragraph)
+
+    return headings
+
+
 def split_chapter_by_internal_headings(ch: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     如果一个章节正文中出现多个"第X章/第X节"之类标题段落，则按标题切成多个子章节。
@@ -200,7 +229,8 @@ def postprocess_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         # “第一部分/第二卷”这类父级结构标题：不单独保留，放到下一章的朗读开头。
         if title and is_volume_only_title(title):
             if chars < 1200:
-                for heading in list(ch.get("structural_headings", []) or []) + [title]:
+                page_headings = structural_headings_from_page(title, content)
+                for heading in list(ch.get("structural_headings", []) or []) + page_headings:
                     if heading and heading not in pending_structural_headings:
                         pending_structural_headings.append(heading)
                 i += 1
@@ -869,7 +899,8 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
 
             # 纯“第一部分”这类结构页，不单独入库，挂到后面的真实章节。
             if title and is_volume_only_title(title) and _count_chars(content) < 1200:
-                for heading in list(current.get("structural_headings", []) or []) + [title]:
+                page_headings = structural_headings_from_page(title, content)
+                for heading in list(current.get("structural_headings", []) or []) + page_headings:
                     if heading and heading not in pending_structural_headings:
                         pending_structural_headings.append(heading)
                 current = None
@@ -981,8 +1012,9 @@ def build_chapters_from_book(book: epub.EpubBook) -> List[Dict[str, Any]]:
         if effective_toc_title and is_volume_only_title(effective_toc_title) and text_len < 1200:
             if current:
                 finalize_current()
-            if effective_toc_title not in pending_structural_headings:
-                pending_structural_headings.append(effective_toc_title)
+            for heading in structural_headings_from_page(effective_toc_title, text):
+                if heading not in pending_structural_headings:
+                    pending_structural_headings.append(heading)
             continue
 
         # 2) 正式 TOC 章节：开新章

@@ -11,6 +11,7 @@ from epub_processor import (
     is_volume_only_title,
     remove_leading_title_from_text,
 )
+from models import clean_text_from_html_bytes
 
 
 class EpubProcessorTests(unittest.TestCase):
@@ -124,6 +125,42 @@ class EpubProcessorTests(unittest.TestCase):
         self.assertFalse(is_volume_only_title("第一章 出发"))
         self.assertFalse(is_volume_only_title("一个很短但完整的故事"))
 
+    def test_structural_page_subtitle_is_kept_before_real_chapter(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            epub_path = temp_root / "结构页副标题测试.epub"
+            self._build_part_divider_epub(epub_path, include_subtitle=True)
+
+            out_dir, _, _ = convert_epub_to_txt(str(epub_path), max_chars_per_file=200000)
+            text = next(Path(out_dir).glob("*.txt")).read_text(encoding="utf-8")
+
+            self.assertTrue(
+                text.startswith(
+                    "第一部分 科技创新的体系\n\n"
+                    "——时势造英雄还是英雄造时势\n\n"
+                    "理解科技革命的本质\n\n"
+                )
+            )
+
+    def test_html_subheadings_are_preserved_and_image_captions_are_removed(self):
+        html = """
+        <html><head><title>理解科技革命的本质</title></head><body>
+          <h2><span id="sigil_toc_id_3">理解科技革命的本质</span></h2>
+          <h3><span id="sigil_toc_id_4">天时、地利、人和：马斯克成功的终极奥义</span></h3>
+          <p>第一段正文。</p>
+          <h3><span id="sigil_toc_id_5">公众对工业革命的两大误读</span></h3>
+          <p>第二段正文。</p>
+          <div><img src="photo.jpg" /></div>
+          <p><span>▲考察低空飞行器</span></p>
+        </body></html>
+        """
+
+        _, text = clean_text_from_html_bytes(html.encode("utf-8"))
+
+        self.assertIn("天时、地利、人和：马斯克成功的终极奥义", text)
+        self.assertIn("公众对工业革命的两大误读", text)
+        self.assertNotIn("考察低空飞行器", text)
+
     @staticmethod
     def _build_sample_epub(target: Path):
         book = epub.EpubBook()
@@ -218,7 +255,7 @@ class EpubProcessorTests(unittest.TestCase):
         epub.write_epub(str(target), book)
 
     @staticmethod
-    def _build_part_divider_epub(target: Path):
+    def _build_part_divider_epub(target: Path, include_subtitle: bool = False):
         book = epub.EpubBook()
         book.set_identifier("part-divider-test")
         book.set_title("结构分隔页测试")
@@ -229,8 +266,12 @@ class EpubProcessorTests(unittest.TestCase):
             file_name="part_1.xhtml",
             lang="zh-CN",
         )
-        part_page.content = """
-        <html><body><h1>第一部分 科技创新的体系</h1></body></html>
+        subtitle = "<p>——时势造英雄还是英雄造时势</p>" if include_subtitle else ""
+        part_page.content = f"""
+        <html><body>
+          <h1>第一部分 科技创新的体系</h1>
+          {subtitle}
+        </body></html>
         """
 
         real_chapter = epub.EpubHtml(

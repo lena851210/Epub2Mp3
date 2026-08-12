@@ -210,19 +210,32 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         for i in range(3):
             sliders.columnconfigure(i, weight=1)
 
-        def make_slider(parent, label_text, var, from_, to, fmt, extra_text_func=None):
+        def make_slider(
+            parent,
+            label_text,
+            var,
+            from_,
+            to,
+            value_text_func,
+            reset_value,
+        ):
             frame = ttk.Frame(parent)
 
             def build_label():
-                base = f"{label_text}: {fmt.format(var.get())}"
-                if extra_text_func:
-                    extra = extra_text_func()
-                    if extra:
-                        base += extra
-                return base
+                return value_text_func(var.get())
 
             label_var = tk.StringVar(value=build_label())
-            ttk.Label(frame, textvariable=label_var, anchor="w").pack(fill="x")
+            label_row = ttk.Frame(frame)
+            label_row.pack(fill="x", pady=(0, 2))
+            ttk.Label(label_row, text=f"{label_text}:").pack(side="left")
+            ttk.Button(
+                label_row,
+                text="↺",
+                command=lambda: var.set(reset_value),
+                width=2,
+                style="Toolbutton",
+            ).pack(side="left", padx=(4, 5))
+            ttk.Label(label_row, textvariable=label_var, anchor="w").pack(side="left")
             scale = ttk.Scale(frame, from_=from_, to=to, variable=var, orient="horizontal")
             scale.pack(fill="x")
 
@@ -232,9 +245,27 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             var.trace_add("write", refresh_label)
             return frame
 
-        def current_wpm_text():
-            estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * self.speed_var.get()))
-            return f"（约 {estimated_wpm} 字/分钟）"
+        def speed_text(value):
+            if value < 0.75:
+                description = "慢"
+            elif value <= 1.15:
+                description = "适中"
+            else:
+                description = "快"
+            estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * value))
+            return f"{description} · {value:.1f}x（约 {estimated_wpm} 字/分）"
+
+        def pitch_text(value):
+            if value < -5:
+                description = "低沉"
+            elif value > 5:
+                description = "明亮"
+            else:
+                description = "自然"
+            return f"{description} {value:+.0f}Hz"
+
+        def volume_text(value):
+            return f"{value:+.0f}%"
 
         self.speed_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("speed", 1.0))
         speed_frame = make_slider(
@@ -243,16 +274,20 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             self.speed_var,
             0.5,
             2.0,
-            "{:.2f}x",
-            extra_text_func=current_wpm_text
+            speed_text,
+            1.0,
         )
-        speed_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        speed_frame.grid(row=0, column=0, sticky="ew", padx=(0, 24))
 
         self.pitch_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("pitch", 0))
-        make_slider(sliders, "音调", self.pitch_var, -50, 50, "{:+.0f}Hz").grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        make_slider(sliders, "音调", self.pitch_var, -50, 50, pitch_text, 0).grid(
+            row=0, column=1, sticky="ew", padx=(0, 24)
+        )
 
         self.volume_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("volume", 0))
-        make_slider(sliders, "音量", self.volume_var, -100, 100, "{:+.0f}%").grid(row=0, column=2, sticky="ew")
+        make_slider(sliders, "音量", self.volume_var, -100, 100, volume_text, 0).grid(
+            row=0, column=2, sticky="ew"
+        )
 
         def update_wpm(*args):
             estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * self.speed_var.get()))
