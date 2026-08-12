@@ -55,6 +55,7 @@ class ConfigManager:
         default = {
             "edge": {"voice_name": "zh-CN-XiaoxiaoNeural", "speed": 1.0, "pitch": 0, "volume": 0},
             "last_txt_dir": "",
+            "last_epub_path": "",
             "merge_audio": True,
             "target_duration": 40,
             "words_per_minute": BASE_WORDS_PER_MINUTE

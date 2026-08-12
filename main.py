@@ -89,6 +89,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         style.configure("Treeview.Heading", font=(base_font[0], base_font[1], "bold"))
         style.configure("Treeview", rowheight=28)
         style.configure("Primary.TButton", font=(base_font[0], base_font[1], "bold"), padding=(12, 7))
+        style.configure("Reset.Toolbutton", font=(base_font[0], 16, "bold"), padding=(2, 0))
 
         main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
         main.grid(row=0, column=0, sticky="nsew")
@@ -233,7 +234,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
                 text="↺",
                 command=lambda: var.set(reset_value),
                 width=2,
-                style="Toolbutton",
+                style="Reset.Toolbutton",
             ).pack(side="left", padx=(4, 5))
             ttk.Label(label_row, textvariable=label_var, anchor="w").pack(side="left")
             scale = ttk.Scale(frame, from_=from_, to=to, variable=var, orient="horizontal")
@@ -511,6 +512,38 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         return os.path.join(parent_dir, audio_basename)
 
+    @staticmethod
+    def resolve_source_epub_dir(txt_dir: str, last_epub_path: str) -> str:
+        """在 TXT 目录失效时，定位当前转换对象 EPUB 所在目录。
+
+        优先使用与当前 ``*_txt`` 目录对应的最后一本 EPUB；
+        旧版配置没有 EPUB 路径时，回退到 TXT 目录的上级目录。
+        """
+        normalized_txt_dir = os.path.abspath(txt_dir) if txt_dir else ""
+        normalized_epub = os.path.abspath(last_epub_path) if last_epub_path else ""
+
+        if normalized_epub and os.path.isfile(normalized_epub):
+            expected_txt_dir = os.path.splitext(normalized_epub)[0] + "_txt"
+            if not normalized_txt_dir or normalized_txt_dir == expected_txt_dir:
+                return os.path.dirname(normalized_epub)
+
+        if normalized_txt_dir:
+            parent_dir = os.path.dirname(normalized_txt_dir)
+            if os.path.isdir(parent_dir):
+                return parent_dir
+
+        return ""
+
+    @staticmethod
+    def _open_directory_path(directory: str):
+        """使用当前系统打开目录。"""
+        if platform.system() == "Darwin":
+            subprocess.run(["open", directory], check=False)
+        elif platform.system() == "Windows":
+            os.startfile(directory)
+        else:
+            subprocess.run(["xdg-open", directory], check=False)
+
     def refresh_voices(self):
         """刷新语音列表"""
         def task():
@@ -747,7 +780,16 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         """打开输出音频目录"""
         txt_dir = self.txt_dir.get().strip()
         if not txt_dir or not os.path.isdir(txt_dir):
-            messagebox.showerror("错误", "请先选择有效的TXT目录")
+            source_dir = self.resolve_source_epub_dir(
+                txt_dir,
+                self.config_mgr.get("last_epub_path", ""),
+            )
+            if source_dir:
+                self._open_directory_path(source_dir)
+                self.set_status("TXT目录已不存在，已打开原 EPUB 所在目录")
+                return
+
+            messagebox.showerror("错误", "未找到有效的 TXT 目录或原 EPUB 所在目录")
             return
 
         out_dir = self.get_audio_output_dir()
@@ -757,12 +799,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         os.makedirs(out_dir, exist_ok=True)
 
-        if platform.system() == "Darwin":
-            subprocess.run(["open", out_dir], check=False)
-        elif platform.system() == "Windows":
-            os.startfile(out_dir)
-        else:
-            subprocess.run(["xdg-open", out_dir], check=False)
+        self._open_directory_path(out_dir)
 
     def import_epub(self):
         """导入 EPUB 文件"""
@@ -788,6 +825,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
             self.txt_dir.set(out_dir)
             self.config_mgr.set("last_txt_dir", out_dir)
+            self.config_mgr.set("last_epub_path", path)
             self.load_file_list(out_dir)
             self.update_action_buttons_state()
             self._refresh_dir_snapshot()
