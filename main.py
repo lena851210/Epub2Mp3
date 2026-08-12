@@ -88,11 +88,20 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         style.configure(".", font=base_font)
         style.configure("Treeview.Heading", font=(base_font[0], base_font[1], "bold"))
         style.configure("Treeview", rowheight=28)
-        style.configure("Primary.TButton", font=(base_font[0], base_font[1], "bold"), padding=(12, 7))
+        button_padding = (10, 7, 10, 5) if sysname == "Darwin" else (10, 6)
+        primary_padding = (12, 8, 12, 6) if sysname == "Darwin" else (12, 7)
+        style.configure("App.TButton", font=base_font, padding=button_padding, anchor="center")
+        style.configure(
+            "Primary.TButton",
+            font=(base_font[0], base_font[1], "bold"),
+            padding=primary_padding,
+            anchor="center",
+        )
         style.configure(
             "ImportPrimary.TButton",
             font=(base_font[0], base_font[1], "bold"),
-            padding=(12, 7),
+            padding=primary_padding,
+            anchor="center",
             foreground="white",
             background="#1677FF",
         )
@@ -101,7 +110,12 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             foreground=[("disabled", "#E6E6E6"), ("!disabled", "white")],
             background=[("pressed", "#0958D9"), ("active", "#4096FF"), ("!disabled", "#1677FF")],
         )
-        style.configure("Accent.TButton", font=(base_font[0], base_font[1], "bold"), padding=(12, 7))
+        style.configure(
+            "Accent.TButton",
+            font=(base_font[0], base_font[1], "bold"),
+            padding=primary_padding,
+            anchor="center",
+        )
         style.configure("Reset.Toolbutton", font=(base_font[0], 16, "bold"), padding=(2, 0))
 
         main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
@@ -166,20 +180,35 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.files_tree.heading("status", text="状态")
         self.files_tree.heading("progress", text="进度")
 
-        self.files_tree.column("select", width=54, minwidth=44, anchor="center", stretch=False)
-        self.files_tree.column("name", width=430, minwidth=250, anchor="w", stretch=True)
-        self.files_tree.column("est", width=100, minwidth=82, anchor="center", stretch=False)
-        self.files_tree.column("size", width=92, minwidth=78, anchor="center", stretch=False)
-        self.files_tree.column("chars", width=92, minwidth=78, anchor="center", stretch=False)
-        self.files_tree.column("status", width=170, minwidth=140, anchor="center", stretch=False)
-        self.files_tree.column("progress", width=110, minwidth=90, anchor="center", stretch=False)
+        self.files_tree.column("select", width=52, minwidth=44, anchor="center", stretch=False)
+        self.files_tree.column("name", width=330, minwidth=250, anchor="w", stretch=True)
+        self.files_tree.column("est", width=90, minwidth=82, anchor="center", stretch=False)
+        self.files_tree.column("size", width=80, minwidth=78, anchor="center", stretch=False)
+        self.files_tree.column("chars", width=80, minwidth=78, anchor="center", stretch=False)
+        self.files_tree.column("status", width=145, minwidth=140, anchor="center", stretch=False)
+        self.files_tree.column("progress", width=95, minwidth=90, anchor="center", stretch=False)
 
         vsb = ttk.Scrollbar(files_lf, orient="vertical", command=self.files_tree.yview)
         hsb = ttk.Scrollbar(files_lf, orient="horizontal", command=self.files_tree.xview)
-        self.files_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        def update_horizontal_scrollbar(first, last):
+            """内容完整可见时隐藏横向滚动条，窗口过窄时再自动出现。"""
+            hsb.set(first, last)
+            if float(first) <= 0.0 and float(last) >= 1.0:
+                hsb.grid_remove()
+            else:
+                hsb.grid()
+
+        self.files_tree.configure(
+            yscrollcommand=vsb.set,
+            xscrollcommand=update_horizontal_scrollbar,
+        )
         self.files_tree.grid(row=2, column=0, sticky="nsew")
         vsb.grid(row=2, column=1, sticky="ns")
         hsb.grid(row=3, column=0, sticky="ew")
+        self.root.after_idle(
+            lambda: update_horizontal_scrollbar(*self.files_tree.xview())
+        )
 
         self.files_tree.bind("<Configure>", lambda e: self._on_tree_configure())
         self.files_tree.bind("<Double-1>", self.on_tree_double_click)
@@ -210,12 +239,19 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         )
         self.voice_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 6))
 
-        ttk.Button(voice_lf, text="刷新列表", command=self.refresh_voices, width=10).grid(row=0, column=2, padx=(0, 6), pady=(0, 6), sticky="e")
+        ttk.Button(
+            voice_lf,
+            text="刷新列表",
+            command=self.refresh_voices,
+            width=10,
+            style="App.TButton",
+        ).grid(row=0, column=2, padx=(0, 6), pady=(0, 6), sticky="e")
         self.preview_btn = ttk.Button(
             voice_lf,
             text="试听",
             command=self.preview_audio,
-            width=8
+            width=8,
+            style="App.TButton",
         )
         self.preview_btn.grid(row=0, column=3, pady=(0, 6), sticky="e")
 
@@ -356,7 +392,13 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         ttk.Label(dir_row, text="TXT目录:").grid(row=0, column=0, padx=(0, 8), sticky="w")
         self.txt_dir = tk.StringVar(value=self.config_mgr.get("last_txt_dir", ""))
         ttk.Entry(dir_row, textvariable=self.txt_dir).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        ttk.Button(dir_row, text="浏览...", command=self.select_input_dir, width=8).grid(row=0, column=2, sticky="e")
+        ttk.Button(
+            dir_row,
+            text="浏览...",
+            command=self.select_input_dir,
+            width=8,
+            style="App.TButton",
+        ).grid(row=0, column=2, sticky="e")
 
         # 初始化 Step 3 显示
         self.toggle_merge_options(initial=True)
@@ -371,7 +413,13 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         left_btns = ttk.Frame(action_bar)
         left_btns.grid(row=0, column=0, sticky="w")
-        ttk.Button(left_btns, text="📁 打开音频目录", command=self.open_output_dir, width=16).pack(side="left")
+        ttk.Button(
+            left_btns,
+            text="📁 打开音频目录",
+            command=self.open_output_dir,
+            width=16,
+            style="App.TButton",
+        ).pack(side="left")
 
         right_btns = ttk.Frame(action_bar)
         right_btns.grid(row=0, column=1, sticky="e")
@@ -380,7 +428,8 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             text="停止",
             command=self.stop_generation,
             width=10,
-            state="disabled"
+            state="disabled",
+            style="App.TButton",
         )
         self.stop_btn.pack(side="left", padx=(0, 10))
 
