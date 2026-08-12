@@ -21,6 +21,11 @@ from models import (
     EdgeTTSWrapper,
     VOICE_MAPPING,
     BASE_WORDS_PER_MINUTE,
+    DEFAULT_PITCH,
+    DEFAULT_SPEED,
+    DEFAULT_VOICE_NAME,
+    DEFAULT_VOLUME,
+    DEFAULT_WORDS_PER_MINUTE,
 )
 from epub_processor import convert_epub_to_txt
 from generation_manager import GenerationMixin
@@ -134,7 +139,22 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             padding=primary_padding,
             anchor="center",
         )
-        style.configure("Reset.Toolbutton", font=(base_font[0], 16, "bold"), padding=(2, 0))
+        # 去掉原生 Toolbutton 的白色方框，只保留克制的重置图标。
+        style.layout(
+            "ResetIcon.TButton",
+            [("Button.padding", {"sticky": "nswe", "children": [("Button.label", {"sticky": "nswe"})]})],
+        )
+        style.configure(
+            "ResetIcon.TButton",
+            font=(base_font[0], 13, "normal"),
+            foreground="#6E6E73",
+            padding=(4, 1),
+            anchor="center",
+        )
+        style.map(
+            "ResetIcon.TButton",
+            foreground=[("disabled", "#B8B8B8"), ("pressed", "#0958D9"), ("active", "#1677FF")],
+        )
 
         main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
         main.grid(row=0, column=0, sticky="nsew")
@@ -241,9 +261,14 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         ttk.Label(voice_lf, text="音色:").grid(row=0, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
 
+        configured_voice = self.config_mgr.get("edge", {}).get("voice_name", DEFAULT_VOICE_NAME)
+        default_voice_label = next(
+            (label for label, code in VOICE_MAPPING.items() if code == DEFAULT_VOICE_NAME),
+            "云健(男)",
+        )
         current_voice = next(
-            (d for d, e in VOICE_MAPPING.items() if e == self.config_mgr.get("edge", {}).get("voice_name")),
-            (self.edge.voices[0] if self.edge.voices else "晓晓(女)")
+            (label for label, code in VOICE_MAPPING.items() if code == configured_voice),
+            default_voice_label,
         )
         if self.edge.voices and current_voice not in self.edge.voices:
             current_voice = self.edge.voices[0]
@@ -300,9 +325,10 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
                 label_row,
                 text="↺",
                 command=lambda: var.set(reset_value),
-                width=2,
-                style="Reset.Toolbutton",
-            ).pack(side="left", padx=(4, 5))
+                width=1,
+                cursor="pointinghand",
+                style="ResetIcon.TButton",
+            ).pack(side="left", padx=(4, 6))
             ttk.Label(label_row, textvariable=label_var, anchor="w").pack(side="left")
             scale = ttk.Scale(frame, from_=from_, to=to, variable=var, orient="horizontal")
             scale.pack(fill="x")
@@ -335,7 +361,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         def volume_text(value):
             return f"{value:+.0f}%"
 
-        self.speed_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("speed", 1.0))
+        self.speed_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("speed", DEFAULT_SPEED))
         speed_frame = make_slider(
             sliders,
             "语速",
@@ -343,17 +369,17 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             0.5,
             2.0,
             speed_text,
-            1.0,
+            DEFAULT_SPEED,
         )
         speed_frame.grid(row=0, column=0, sticky="ew", padx=(0, 24))
 
-        self.pitch_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("pitch", 0))
-        make_slider(sliders, "音调", self.pitch_var, -50, 50, pitch_text, 0).grid(
+        self.pitch_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("pitch", DEFAULT_PITCH))
+        make_slider(sliders, "音调", self.pitch_var, -50, 50, pitch_text, DEFAULT_PITCH).grid(
             row=0, column=1, sticky="ew", padx=(0, 24)
         )
 
-        self.volume_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("volume", 0))
-        make_slider(sliders, "音量", self.volume_var, -100, 100, volume_text, 0).grid(
+        self.volume_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("volume", DEFAULT_VOLUME))
+        make_slider(sliders, "音量", self.volume_var, -100, 100, volume_text, DEFAULT_VOLUME).grid(
             row=0, column=2, sticky="ew"
         )
 
@@ -362,7 +388,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             self.wpm_var.set(estimated_wpm)
             self.update_all_estimates()
 
-        self.wpm_var = tk.IntVar(value=self.config_mgr.get("words_per_minute", BASE_WORDS_PER_MINUTE))
+        self.wpm_var = tk.IntVar(value=self.config_mgr.get("words_per_minute", DEFAULT_WORDS_PER_MINUTE))
         self.speed_var.trace_add("write", update_wpm)
 
         # =========================
@@ -1004,7 +1030,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
                 pass
             self.dir_watch_job = None
 
-        edge_voice_name = VOICE_MAPPING.get(self.voice_var.get(), "zh-CN-XiaoxiaoNeural")
+        edge_voice_name = VOICE_MAPPING.get(self.voice_var.get(), DEFAULT_VOICE_NAME)
         self.config_mgr.set("edge", {
             "voice_name": edge_voice_name,
             "speed": self.speed_var.get(),

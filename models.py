@@ -17,6 +17,11 @@ import edge_tts
 
 # ====== 常量定义 ======
 BASE_WORDS_PER_MINUTE = 300
+DEFAULT_VOICE_NAME = "zh-CN-YunjianNeural"
+DEFAULT_SPEED = 0.8
+DEFAULT_PITCH = 0
+DEFAULT_VOLUME = 100
+DEFAULT_WORDS_PER_MINUTE = int(BASE_WORDS_PER_MINUTE * DEFAULT_SPEED)
 
 VOICE_MAPPING = {
     "晓晓(女)": "zh-CN-XiaoxiaoNeural",
@@ -53,12 +58,17 @@ class ConfigManager:
     def _load(self) -> Dict[str, Any]:
         """加载配置文件"""
         default = {
-            "edge": {"voice_name": "zh-CN-XiaoxiaoNeural", "speed": 1.0, "pitch": 0, "volume": 0},
+            "edge": {
+                "voice_name": DEFAULT_VOICE_NAME,
+                "speed": DEFAULT_SPEED,
+                "pitch": DEFAULT_PITCH,
+                "volume": DEFAULT_VOLUME,
+            },
             "last_txt_dir": "",
             "last_epub_path": "",
             "merge_audio": True,
             "target_duration": 40,
-            "words_per_minute": BASE_WORDS_PER_MINUTE
+            "words_per_minute": DEFAULT_WORDS_PER_MINUTE
         }
         if os.path.exists(self.config_file):
             try:
@@ -217,7 +227,7 @@ class EdgeTTSWrapper:
     def _resolve_voice_code(self, voice: str) -> str:
         """允许 voice 既可以是 UI 标签，也可以直接是 zh-CN-xxxNeural 代码"""
         if not voice:
-            return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
+            return DEFAULT_VOICE_NAME
 
         # 1) UI 标签（例如：晓晓(女)）
         if voice in VOICE_MAPPING:
@@ -229,7 +239,7 @@ class EdgeTTSWrapper:
         if isinstance(voice, str) and re.match(r"^[a-z]{2}-[A-Z]{2}-", voice):
             return voice
 
-        return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
+        return DEFAULT_VOICE_NAME
 
     def text_to_speech(self, text: str, voice: str, speed: float, pitch: float, volume: float, output_file: str):
         """文本转语音"""

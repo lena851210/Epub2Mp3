@@ -1,7 +1,19 @@
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from models import EdgeTTSWrapper, VOICE_MAPPING, clean_text_from_html_bytes
+from models import (
+    ConfigManager,
+    DEFAULT_PITCH,
+    DEFAULT_SPEED,
+    DEFAULT_VOICE_NAME,
+    DEFAULT_VOLUME,
+    DEFAULT_WORDS_PER_MINUTE,
+    EdgeTTSWrapper,
+    VOICE_MAPPING,
+    clean_text_from_html_bytes,
+)
 
 
 class FakeCommunicate:
@@ -58,6 +70,23 @@ class EdgeTTSWrapperTests(unittest.TestCase):
             FakeCommunicate.calls[0]["voice"],
             VOICE_MAPPING["晓晓(女)"],
         )
+
+
+class ConfigManagerTests(unittest.TestCase):
+    def test_new_config_uses_product_voice_defaults(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ConfigManager(os.path.join(temp_dir, "config.json"))
+
+            self.assertEqual(
+                config.get("edge"),
+                {
+                    "voice_name": DEFAULT_VOICE_NAME,
+                    "speed": DEFAULT_SPEED,
+                    "pitch": DEFAULT_PITCH,
+                    "volume": DEFAULT_VOLUME,
+                },
+            )
+            self.assertEqual(config.get("words_per_minute"), DEFAULT_WORDS_PER_MINUTE)
 
 
 class HtmlTextCleaningTests(unittest.TestCase):
