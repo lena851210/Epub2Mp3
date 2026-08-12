@@ -8,6 +8,7 @@ from ebooklib import epub
 from epub_processor import (
     convert_epub_to_txt,
     find_saved_epub_cover,
+    find_saved_epub_metadata,
     is_volume_only_title,
     remove_leading_title_from_text,
 )
@@ -36,6 +37,10 @@ class EpubProcessorTests(unittest.TestCase):
             cover_path = find_saved_epub_cover(out_dir)
             self.assertIsNotNone(cover_path)
             self.assertEqual(Path(cover_path).read_bytes(), self._sample_cover_bytes())
+            saved_metadata = find_saved_epub_metadata(out_dir)
+            self.assertEqual(saved_metadata["album"], "短章节测试")
+            self.assertEqual(saved_metadata["artist"], "测试作者")
+            self.assertEqual(saved_metadata["tracks"][txt_files[0].name], "第一章 出发")
 
             first_text = txt_files[0].read_text(encoding="utf-8")
             second_text = txt_files[1].read_text(encoding="utf-8")
@@ -166,6 +171,7 @@ class EpubProcessorTests(unittest.TestCase):
         book = epub.EpubBook()
         book.set_identifier("short-toc-chapters-test")
         book.set_title("短章节测试")
+        book.add_author("测试作者")
         book.set_language("zh-CN")
         book.set_cover("cover.jpg", EpubProcessorTests._sample_cover_bytes())
 

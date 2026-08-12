@@ -5,6 +5,7 @@
 
 import os
 import re
+import json
 from typing import Dict, Any, List, Tuple, Optional, Callable
 from urllib.parse import unquote
 
@@ -27,6 +28,7 @@ last_output_dir = None
 
 SAVED_COVER_BASENAME = ".epub-to-mp3-cover"
 SAVED_COVER_EXTENSIONS = (".jpg", ".png", ".webp")
+SAVED_METADATA_FILENAME = ".epub-to-mp3-metadata.json"
 
 # ====== EPUB->TXT 后处理规则（可调参数） ======
 
@@ -650,6 +652,90 @@ def find_saved_epub_cover(txt_dir: str) -> Optional[str]:
     return None
 
 
+def _first_epub_metadata_value(book: epub.EpubBook, key: str) -> str:
+    """读取并精简化 EPUB Dublin Core 元数据。"""
+    try:
+        values = book.get_metadata("DC", key) or []
+    except Exception:
+        return ""
+
+    for value, _attrs in values:
+        cleaned = normalize_whitespace(str(value or "")).strip()
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def extract_epub_book_metadata(book: epub.EpubBook) -> Dict[str, str]:
+    """提取可靠的书名和作者；缺失时留空，不从文件名猜测。"""
+    title = _first_epub_metadata_value(book, "title")
+    creators: List[str] = []
+    try:
+        creator_values = book.get_metadata("DC", "creator") or []
+    except Exception:
+        creator_values = []
+
+    for value, _attrs in creator_values:
+        creator = normalize_whitespace(str(value or "")).strip()
+        if creator and creator not in creators:
+            creators.append(creator)
+
+    return {
+        "album": title,
+        "artist": " / ".join(creators),
+    }
+
+
+def save_epub_book_metadata(
+    book: epub.EpubBook,
+    output_dir: str,
+    track_titles: Optional[Dict[str, str]] = None,
+) -> str:
+    """把 EPUB 书籍元数据保存到 TXT 目录，供生成 MP3 时使用。"""
+    os.makedirs(output_dir, exist_ok=True)
+    metadata_path = os.path.join(output_dir, SAVED_METADATA_FILENAME)
+    metadata = extract_epub_book_metadata(book)
+    if track_titles:
+        metadata["tracks"] = {
+            str(filename): normalize_whitespace(str(title or "")).strip()
+            for filename, title in track_titles.items()
+            if filename and normalize_whitespace(str(title or "")).strip()
+        }
+    try:
+        with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+            json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
+        return metadata_path
+    except Exception:
+        return ""
+
+
+def find_saved_epub_metadata(txt_dir: str) -> Dict[str, Any]:
+    """读取导入 EPUB 时保存的书名和作者。"""
+    metadata_path = os.path.join(txt_dir or "", SAVED_METADATA_FILENAME)
+    if not os.path.isfile(metadata_path):
+        return {}
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+            raw = json.load(metadata_file)
+    except Exception:
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+    metadata = {
+        key: normalize_whitespace(str(raw.get(key, "") or "")).strip()
+        for key in ("album", "artist")
+    }
+    raw_tracks = raw.get("tracks", {})
+    if isinstance(raw_tracks, dict):
+        metadata["tracks"] = {
+            str(filename): normalize_whitespace(str(title or "")).strip()
+            for filename, title in raw_tracks.items()
+            if filename and normalize_whitespace(str(title or "")).strip()
+        }
+    return metadata
+
+
 # ====== 【函数3】获取元素 href ======
 def get_item_href_key(item) -> str:
     """获取 EPUB 元素的 href 键"""
@@ -1093,6 +1179,7 @@ def convert_epub_to_txt(
     os.makedirs(out_dir, exist_ok=True)
 
     cover_path = save_epub_cover(book, out_dir)
+    save_epub_book_metadata(book, out_dir)
     if progress_callback and cover_path:
         progress_callback("已提取书籍封面，稍后将写入 MP3...")
 
@@ -1116,6 +1203,7 @@ def convert_epub_to_txt(
 
     total_chapters = len(chapters)
     converted_count = 0  # 生成的 TXT 文件数
+    track_titles: Dict[str, str] = {}
 
     def build_txt_header(chapter: Dict[str, Any], chapter_title: str, include_structure: bool = True) -> str:
         """组装 TXT 开头：父级结构标题 -> 真实章节标题。"""
@@ -1197,6 +1285,7 @@ def convert_epub_to_txt(
                     if split_total <= 1
                     else f"{file_counter:03d}-{part_num} {safe_title_for_file}.txt"
                 )
+                track_titles[filename] = raw_title
                 out_path = os.path.join(out_dir, filename)
 
                 if part_num == 1:
@@ -1220,6 +1309,7 @@ def convert_epub_to_txt(
         # --- 不拆分 ---
         else:
             filename = f"{file_counter:03d} {safe_title_for_file}.txt"
+            track_titles[filename] = raw_title
             out_path = os.path.join(out_dir, filename)
 
             content2 = remove_leading_title_from_text(raw_title, content)
@@ -1239,5 +1329,6 @@ def convert_epub_to_txt(
         if progress_callback and idx % 5 == 0:
             progress_callback(f"正在转换: {idx}/{total_chapters}章")
 
+    save_epub_book_metadata(book, out_dir, track_titles=track_titles)
     last_output_dir = out_dir
     return out_dir, converted_count, file_counter - 1

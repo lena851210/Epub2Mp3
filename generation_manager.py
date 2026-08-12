@@ -10,7 +10,7 @@ from typing import List, Tuple, Optional
 from tkinter import messagebox
 
 from audio_processor import _process_audio_chunk, find_existing_outputs_for_txt
-from epub_processor import find_saved_epub_cover
+from epub_processor import find_saved_epub_cover, find_saved_epub_metadata
 
 
 def classify_task_status(status_text: str) -> Optional[str]:
@@ -371,6 +371,7 @@ class GenerationMixin:
 
         os.makedirs(out_dir, exist_ok=True)
         self.current_cover_path = find_saved_epub_cover(txt_dir)
+        self.current_book_metadata = find_saved_epub_metadata(txt_dir)
 
         files = list(getattr(self, "task_files", []))
         if not files:
@@ -441,6 +442,7 @@ class GenerationMixin:
                 stop_flag_check=lambda: self.stop_flag,
                 tts_with_retry=self.tts_with_retry,
                 cover_path=self.current_cover_path,
+                book_metadata=self.current_book_metadata,
                 split_total=1
             )
 
@@ -509,6 +511,7 @@ class GenerationMixin:
                         stop_flag_check=lambda: self.stop_flag,
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
+                        book_metadata=self.current_book_metadata,
                         split_total=split_total
                     )
             else:
@@ -530,6 +533,7 @@ class GenerationMixin:
                     stop_flag_check=lambda: self.stop_flag,
                     tts_with_retry=self.tts_with_retry,
                     cover_path=self.current_cover_path,
+                    book_metadata=self.current_book_metadata,
                 )
 
     def generate_merged_files(self, files: List[str], txt_dir: str, out_dir: str):
@@ -574,6 +578,7 @@ class GenerationMixin:
                         stop_flag_check=lambda: self.stop_flag,
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
+                        book_metadata=self.current_book_metadata,
                     )
                     part_num += 1
                     current_text = ""
@@ -604,6 +609,7 @@ class GenerationMixin:
                         stop_flag_check=lambda: self.stop_flag,
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
+                        book_metadata=self.current_book_metadata,
                         split_total=split_total
                     )
                     part_num += 1
@@ -635,6 +641,7 @@ class GenerationMixin:
                         stop_flag_check=lambda: self.stop_flag,
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
+                        book_metadata=self.current_book_metadata,
                     )
                     part_num += 1
 
@@ -661,4 +668,5 @@ class GenerationMixin:
                 stop_flag_check=lambda: self.stop_flag,
                 tts_with_retry=self.tts_with_retry,
                 cover_path=self.current_cover_path,
+                book_metadata=self.current_book_metadata,
             )

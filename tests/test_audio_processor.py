@@ -4,7 +4,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from audio_processor import _process_audio_chunk, embed_cover_art
+from audio_processor import (
+    _process_audio_chunk,
+    build_audio_metadata,
+    embed_cover_art,
+    embed_mp3_metadata,
+)
 
 
 class Value:
@@ -54,8 +59,60 @@ class AudioProcessorTests(unittest.TestCase):
             self.assertFalse(result)
             self.assertEqual(mp3_path.read_bytes(), b"original-audio")
 
-    @patch("audio_processor.embed_cover_art", return_value=True)
-    def test_final_audio_chunk_receives_saved_cover(self, embed_mock):
+    def test_audio_metadata_uses_clean_chapter_titles(self):
+        single = build_audio_metadata(
+            {
+                "album": "马斯克逻辑",
+                "artist": "王煜全",
+                "tracks": {
+                    "002 理解科技革命.txt": "理解科技革命：马斯克的成功",
+                },
+            },
+            ["002 理解科技革命.txt"],
+        )
+        split = build_audio_metadata(
+            {"album": "马斯克逻辑", "artist": "王煜全"},
+            ["002 理解科技革命.txt"],
+            part_num=2,
+            split_total=3,
+        )
+        merged = build_audio_metadata(
+            {"album": "马斯克逻辑", "artist": "王煜全"},
+            ["002 理解科技革命.txt", "003-1 科技潮流.txt"],
+        )
+
+        self.assertEqual(single, {
+            "title": "理解科技革命：马斯克的成功",
+            "album": "马斯克逻辑",
+            "artist": "王煜全",
+        })
+        self.assertEqual(split["title"], "理解科技革命（第2部分）")
+        self.assertEqual(merged["title"], "理解科技革命 — 科技潮流")
+
+    @patch("audio_processor.shutil.which", return_value="/usr/local/bin/ffmpeg")
+    @patch("audio_processor.subprocess.run")
+    def test_mp3_metadata_command_contains_only_non_empty_tags(self, run_mock, _which_mock):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mp3_path = Path(temp_dir) / "chapter.mp3"
+            mp3_path.write_bytes(b"audio")
+
+            def fake_ffmpeg(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"tagged-audio")
+
+            run_mock.side_effect = fake_ffmpeg
+            result = embed_mp3_metadata(
+                str(mp3_path),
+                metadata={"title": "第一章", "album": "书名", "artist": ""},
+            )
+
+            command = run_mock.call_args.args[0]
+            self.assertTrue(result)
+            self.assertIn("title=第一章", command)
+            self.assertIn("album=书名", command)
+            self.assertNotIn("artist=", command)
+
+    @patch("audio_processor.embed_mp3_metadata", return_value=True)
+    def test_final_audio_chunk_receives_saved_book_information(self, embed_mock):
         statuses = []
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -85,11 +142,20 @@ class AudioProcessorTests(unittest.TestCase):
                 stop_flag_check=lambda: False,
                 tts_with_retry=tts_with_retry,
                 cover_path=str(cover_path),
+                book_metadata={"album": "测试书", "artist": "测试作者"},
             )
 
             self.assertIsNotNone(output_path)
-            embed_mock.assert_called_once_with(output_path, str(cover_path))
-            self.assertTrue(any("含封面" in status for status in statuses))
+            embed_mock.assert_called_once_with(
+                output_path,
+                cover_path=str(cover_path),
+                metadata={
+                    "title": "测试",
+                    "album": "测试书",
+                    "artist": "测试作者",
+                },
+            )
+            self.assertTrue(any("含书籍信息" in status for status in statuses))
 
 
 if __name__ == "__main__":

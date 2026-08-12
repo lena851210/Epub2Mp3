@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 from pydub import AudioSegment
 
@@ -233,15 +233,64 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
     return final
 
 
-def embed_cover_art(mp3_path: str, cover_path: str) -> bool:
+def build_audio_metadata(
+    book_metadata: Optional[Dict[str, object]],
+    file_list: List[str],
+    part_num: int = 1,
+    split_total: int = 1,
+) -> Dict[str, str]:
+    """组装精简 MP3 标签：作者、书名、真实章节名。"""
+    metadata = dict(book_metadata or {})
+    track_titles = metadata.get("tracks", {})
+    if not isinstance(track_titles, dict):
+        track_titles = {}
+    titles: List[str] = []
+    for filename in file_list:
+        basename = os.path.basename(filename)
+        title = str(track_titles.get(basename, "") or "").strip()
+        if not title:
+            stem = os.path.splitext(basename)[0]
+            # 手动导入普通 TXT 时没有隐藏映射，才退回到文件名。
+            match = re.match(r"^\s*\d{1,4}(?:-\d{1,4})?\s*[-_ ]*\s*(.+?)\s*$", stem)
+            title = match.group(1) if match else stem
+        cleaned = re.sub(r"\s+", " ", title).strip()
+        if cleaned and cleaned not in titles:
+            titles.append(cleaned)
+
+    if len(titles) == 1:
+        title = titles[0]
+        if split_total > 1:
+            title += f"（第{part_num}部分）"
+    elif len(titles) > 1:
+        title = f"{titles[0]} — {titles[-1]}"
+    else:
+        title = ""
+
+    return {
+        "title": title,
+        "album": str(metadata.get("album", "") or "").strip(),
+        "artist": str(metadata.get("artist", "") or "").strip(),
+    }
+
+
+def embed_mp3_metadata(
+    mp3_path: str,
+    cover_path: Optional[str] = None,
+    metadata: Optional[Dict[str, str]] = None,
+) -> bool:
     """
-    使用 FFmpeg 给最终 MP3 写入封面。
+    使用 FFmpeg 一次写入封面和 Title / Album / Artist。
 
     先生成临时文件，成功后再替换原音频；失败时保留原 MP3 不变。
     """
-    if not mp3_path or not cover_path:
+    clean_metadata = {
+        key: re.sub(r"\s+", " ", str((metadata or {}).get(key, "") or "")).strip()
+        for key in ("title", "album", "artist")
+    }
+    has_cover = bool(cover_path and os.path.isfile(cover_path))
+    if not mp3_path or (not has_cover and not any(clean_metadata.values())):
         return False
-    if not os.path.isfile(mp3_path) or not os.path.isfile(cover_path):
+    if not os.path.isfile(mp3_path):
         return False
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
@@ -257,35 +306,28 @@ def embed_cover_art(mp3_path: str, cover_path: str) -> bool:
     temp_file.close()
 
     try:
+        command = [
+            ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", mp3_path,
+        ]
+        if has_cover:
+            command.extend(["-i", cover_path])
+        command.extend(["-map", "0:a:0"])
+        if has_cover:
+            command.extend([
+                "-map", "1:v:0", "-c:v", "mjpeg",
+                "-metadata:s:v", "title=Album cover",
+                "-metadata:s:v", "comment=Cover (front)",
+                "-disposition:v", "attached_pic",
+            ])
+        command.extend(["-c:a", "copy", "-map_metadata", "-1", "-id3v2_version", "3"])
+        for key in ("title", "album", "artist"):
+            if clean_metadata[key]:
+                command.extend(["-metadata", f"{key}={clean_metadata[key]}"])
+        command.append(temp_path)
+
         subprocess.run(
-            [
-                ffmpeg_path,
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                mp3_path,
-                "-i",
-                cover_path,
-                "-map",
-                "0:a:0",
-                "-map",
-                "1:v:0",
-                "-c:a",
-                "copy",
-                "-c:v",
-                "mjpeg",
-                "-id3v2_version",
-                "3",
-                "-metadata:s:v",
-                "title=Album cover",
-                "-metadata:s:v",
-                "comment=Cover (front)",
-                "-disposition:v",
-                "attached_pic",
-                temp_path,
-            ],
+            command,
             check=True,
             capture_output=True,
         )
@@ -301,6 +343,11 @@ def embed_cover_art(mp3_path: str, cover_path: str) -> bool:
                 os.remove(temp_path)
             except Exception:
                 pass
+
+
+def embed_cover_art(mp3_path: str, cover_path: str) -> bool:
+    """兼容旧调用：只写入封面。"""
+    return embed_mp3_metadata(mp3_path, cover_path=cover_path)
 
 
 # ====== 【函数2】音频处理核心函数 ======
@@ -323,6 +370,7 @@ def _process_audio_chunk(
     tts_with_retry,
     split_total: int = 1,
     cover_path: Optional[str] = None,
+    book_metadata: Optional[Dict[str, str]] = None,
 ):
     """
     处理一个音频块（包含文本合成和音频合并）
@@ -416,19 +464,29 @@ def _process_audio_chunk(
                     except Exception:
                         pass
 
-            cover_embedded = None
-            if cover_path:
+            metadata_written = None
+            audio_metadata = build_audio_metadata(
+                book_metadata,
+                file_list,
+                part_num=part_num,
+                split_total=split_total,
+            )
+            if cover_path or any(audio_metadata.values()):
                 for name in file_list:
-                    set_file_status(name, "正在写入书籍封面...", spinning=(name == leader))
-                cover_embedded = embed_cover_art(opath, cover_path)
+                    set_file_status(name, "正在写入书籍信息...", spinning=(name == leader))
+                metadata_written = embed_mp3_metadata(
+                    opath,
+                    cover_path=cover_path,
+                    metadata=audio_metadata,
+                )
 
             status_details = []
             if dur_str:
                 status_details.append(f"时长{dur_str}")
-            if cover_embedded is True:
-                status_details.append("含封面")
-            elif cover_embedded is False:
-                status_details.append("封面未写入")
+            if metadata_written is True:
+                status_details.append("含书籍信息")
+            elif metadata_written is False:
+                status_details.append("书籍信息未写入")
 
             completed_status = "已完成"
             if status_details:
