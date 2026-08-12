@@ -36,12 +36,22 @@ except ImportError:
 class AudiobookGenerator(FileManagerMixin, GenerationMixin):
     """有声书生成工具 - 主应用类"""
 
+    @staticmethod
+    def _create_root_window():
+        """创建主窗口；拖放扩展异常时保证 App 仍能启动。"""
+        if TkinterDnD is not None:
+            try:
+                return TkinterDnD.Tk(), True
+            except Exception as e:
+                print(f"文件拖放暂不可用，已回退到普通窗口: {e}")
+        return tk.Tk(), False
+
     def __init__(self):
         self.config_mgr = ConfigManager(self._get_config_path())
         self.edge = EdgeTTSWrapper()
         self.duration_estimator = DurationEstimator(BASE_WORDS_PER_MINUTE)
 
-        self.root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
+        self.root, self.drag_and_drop_available = self._create_root_window()
         self.root.title("EPUB to MP3 - V2.0")
         self.root.geometry("960x680")
         self.root.minsize(720, 560)
@@ -894,7 +904,11 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
     def _setup_epub_drop(self):
         """让整个主窗口接收 EPUB 文件拖放。"""
-        if DND_FILES is None or not hasattr(self.root, "drop_target_register"):
+        if (
+            not self.drag_and_drop_available
+            or DND_FILES is None
+            or not hasattr(self.root, "drop_target_register")
+        ):
             return
         try:
             self.root.drop_target_register(DND_FILES)

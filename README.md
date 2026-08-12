@@ -318,7 +318,7 @@ python3 -c "import tkinter; print('tkinter ok')"
 3. 程序自动解析并导出 TXT
 4. 自动加载生成后的 TXT 列表
 
-也可以从 Finder / 文件管理器把一本 `.epub` 拖到 App 窗口任意位置，效果与点击“导入 EPUB”完全相同。
+也可以从 Finder / 文件管理器把一本 `.epub` 拖到 App 窗口任意位置，效果与点击“导入 EPUB”完全相同。如果系统的 Tcl/Tk 与拖放扩展不兼容，App 会自动回退到普通窗口，按钮导入和其他功能仍可正常使用。
 
 ### 当前行为
 - 默认按书本结构导出 TXT

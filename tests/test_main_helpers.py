@@ -1,12 +1,25 @@
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from main import AudiobookGenerator
 
 
 class MainHelperTests(unittest.TestCase):
+    @patch("main.tk.Tk")
+    @patch("main.TkinterDnD")
+    def test_drag_extension_failure_falls_back_to_normal_window(self, dnd_mock, tk_mock):
+        fallback_root = object()
+        dnd_mock.Tk.side_effect = RuntimeError("Unable to load tkdnd library")
+        tk_mock.return_value = fallback_root
+
+        root, drag_available = AudiobookGenerator._create_root_window()
+
+        self.assertIs(root, fallback_root)
+        self.assertFalse(drag_available)
+        tk_mock.assert_called_once_with()
+
     def test_drop_paths_keep_spaces_and_chinese_names(self):
         root = Mock()
         root.tk.splitlist.return_value = (

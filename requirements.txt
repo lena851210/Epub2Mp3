@@ -3,4 +3,4 @@ beautifulsoup4==4.15.0
 edge-tts==7.2.8
 lxml==6.1.1
 pydub==0.25.1
-tkinterdnd2==0.6.0
+tkinterdnd2-universal==1.7.3
