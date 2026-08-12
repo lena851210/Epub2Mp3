@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from models import EdgeTTSWrapper, VOICE_MAPPING
+from models import EdgeTTSWrapper, VOICE_MAPPING, clean_text_from_html_bytes
 
 
 class FakeCommunicate:
@@ -58,6 +58,29 @@ class EdgeTTSWrapperTests(unittest.TestCase):
             FakeCommunicate.calls[0]["voice"],
             VOICE_MAPPING["晓晓(女)"],
         )
+
+
+class HtmlTextCleaningTests(unittest.TestCase):
+    def test_body_text_containing_note_word_is_not_dropped(self):
+        html = """
+        <html><head><title>第一章 中国为什么叫中国</title></head><body>
+          <div>
+            <h1>第一章</h1>
+            <h1>中国为什么叫中国</h1>
+            <p>中国文明的起点</p>
+            <p>这是正文，作者在这里讨论一个注释中的观点。</p>
+            <aside epub:type="footnote"><p>这是应该删除的脚注。</p></aside>
+            <p>这是脚注之后仍应保留的正文。</p>
+          </div>
+        </body></html>
+        """
+
+        _title, text = clean_text_from_html_bytes(html.encode("utf-8"))
+
+        self.assertIn("中国文明的起点", text)
+        self.assertIn("注释中的观点", text)
+        self.assertIn("脚注之后仍应保留", text)
+        self.assertNotIn("应该删除的脚注", text)
 
 
 if __name__ == "__main__":

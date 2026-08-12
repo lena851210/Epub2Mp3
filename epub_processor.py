@@ -876,14 +876,31 @@ def remove_redundant_heading_lines(text: str, title: str = "", scan_first_lines:
         return False
 
     title_s = simplify(title) if title else ""
+    title_without_number_s = re.sub(
+        r"^第X[章节回卷篇部]",
+        "",
+        title_s,
+    ) if title_s else ""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     result = []
 
     for i, line in enumerate(lines):
         ln = line.strip()
 
-        if i < scan_first_lines and ln and looks_like_heading(ln):
+        if i < scan_first_lines and ln:
             cur_s = simplify(ln)
+
+            # EPUB 常把“第一章”和“中国为什么叫中国”分成两个 h1。
+            # 文件头已写入完整目录标题时，只删除开头这个精确重复项。
+            if title_s and (
+                cur_s == title_s
+                or (title_without_number_s and cur_s == title_without_number_s)
+            ):
+                continue
+
+            if not looks_like_heading(ln):
+                result.append(line)
+                continue
 
             # 当前行如果其实更像图题，不删
             if is_caption_like_text(ln):

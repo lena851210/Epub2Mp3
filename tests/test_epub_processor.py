@@ -11,6 +11,7 @@ from epub_processor import (
     find_saved_epub_metadata,
     is_volume_only_title,
     remove_leading_title_from_text,
+    remove_redundant_heading_lines,
 )
 from models import clean_text_from_html_bytes
 
@@ -71,6 +72,20 @@ class EpubProcessorTests(unittest.TestCase):
         cleaned = remove_leading_title_from_text(title, text)
 
         self.assertEqual(cleaned, text)
+
+    def test_chapter_title_without_number_is_removed_only_at_start(self):
+        title = "第一章 中国为什么叫中国"
+        text = (
+            "中国为什么叫中国\n\n"
+            "中国文明的起点\n\n"
+            "这是正文第一段。\n\n"
+            "后文再次问：中国为什么叫中国。"
+        )
+
+        cleaned = remove_redundant_heading_lines(text, title)
+
+        self.assertTrue(cleaned.startswith("中国文明的起点"))
+        self.assertIn("后文再次问：中国为什么叫中国。", cleaned)
 
     def test_toc_anchors_in_one_html_become_separate_chapters(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -420,14 +420,16 @@ def soup_to_paragraphs(soup: BeautifulSoup) -> str:
     paras: List[str] = []
     for blk in list(body.find_all(BLOCK_TAGS)):
         try:
-            if any(parent.name in BLOCK_TAGS for parent in getattr(blk, "parents", [])):
+            # 优先提取没有更细块级子元素的叶子块。
+            # 如果按外层 div 提取，整章会被压成一个大段落，
+            # 也会让局部的脚注关键字误伤整章。
+            if blk.find(BLOCK_TAGS):
                 continue
         except Exception:
             pass
         t = text_of(blk)
         if t:
-            if not re.search(r'注释|注\d+|footnote|note|注解', t, re.IGNORECASE):
-                paras.append(t)
+            paras.append(t)
     
     if len(paras) <= 1:
         whole = " ".join(s.strip() for s in body.stripped_strings) if hasattr(body, "stripped_strings") else ""
@@ -435,7 +437,7 @@ def soup_to_paragraphs(soup: BeautifulSoup) -> str:
             parts = re.split(r"(?<=[。！？\.\?\!])\s+|\n{2,}|\r\n", whole)
             parts = [p.strip() for p in parts if p.strip()]
             if parts:
-                paras = [p for p in parts if not re.search(r'注释|注\d+|footnote|note|注解', p, re.IGNORECASE)]
+                paras = parts
     
     txt = "\n\n".join(paras)
     txt = normalize_whitespace(txt)
