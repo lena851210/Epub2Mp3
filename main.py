@@ -24,7 +24,7 @@ from models import (
 )
 from epub_processor import convert_epub_to_txt
 from generation_manager import GenerationMixin
-from file_manager import FileManagerMixin
+from file_manager import FileManagerMixin, display_task_progress, display_task_status
 
 
 class AudiobookGenerator(FileManagerMixin, GenerationMixin):
@@ -89,6 +89,19 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         style.configure("Treeview.Heading", font=(base_font[0], base_font[1], "bold"))
         style.configure("Treeview", rowheight=28)
         style.configure("Primary.TButton", font=(base_font[0], base_font[1], "bold"), padding=(12, 7))
+        style.configure(
+            "ImportPrimary.TButton",
+            font=(base_font[0], base_font[1], "bold"),
+            padding=(12, 7),
+            foreground="white",
+            background="#1677FF",
+        )
+        style.map(
+            "ImportPrimary.TButton",
+            foreground=[("disabled", "#E6E6E6"), ("!disabled", "white")],
+            background=[("pressed", "#0958D9"), ("active", "#4096FF"), ("!disabled", "#1677FF")],
+        )
+        style.configure("Accent.TButton", font=(base_font[0], base_font[1], "bold"), padding=(12, 7))
         style.configure("Reset.Toolbutton", font=(base_font[0], 16, "bold"), padding=(2, 0))
 
         main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
@@ -136,30 +149,30 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         self.import_epub_btn = ttk.Button(
             right_main_action,
-            text="📘 导入 EPUB→TXT",
+            text="📘 导入 EPUB",
             command=self.import_epub,
             width=20,
-            style="Primary.TButton"
+            style=("Accent.TButton" if sysname == "Darwin" else "ImportPrimary.TButton")
         )
         self.import_epub_btn.pack(side="right")
 
-        columns = ("select", "name", "size", "chars", "est", "status", "progress")
+        columns = ("select", "name", "est", "size", "chars", "status", "progress")
         self.files_tree = ttk.Treeview(files_lf, columns=columns, show="headings")
         self.files_tree.heading("select", text="选择")
-        self.files_tree.heading("name", text="TXT名称")
+        self.files_tree.heading("name", text="章节")
+        self.files_tree.heading("est", text="预估时长")
         self.files_tree.heading("size", text="大小(KB)")
         self.files_tree.heading("chars", text="字数")
-        self.files_tree.heading("est", text="预估时长")
         self.files_tree.heading("status", text="状态")
         self.files_tree.heading("progress", text="进度")
 
         self.files_tree.column("select", width=48, minwidth=36, anchor="center", stretch=False)
-        self.files_tree.column("name", width=420, minwidth=200, anchor="w", stretch=True)
+        self.files_tree.column("name", width=480, minwidth=240, anchor="w", stretch=True)
+        self.files_tree.column("est", width=92, minwidth=76, anchor="center", stretch=False)
         self.files_tree.column("size", width=90, minwidth=72, anchor="e", stretch=False)
         self.files_tree.column("chars", width=90, minwidth=72, anchor="e", stretch=False)
-        self.files_tree.column("est", width=100, minwidth=80, anchor="center", stretch=False)
-        self.files_tree.column("status", width=220, minwidth=160, anchor="w", stretch=True)
-        self.files_tree.column("progress", width=180, minwidth=120, anchor="center", stretch=True)
+        self.files_tree.column("status", width=150, minwidth=120, anchor="w", stretch=False)
+        self.files_tree.column("progress", width=150, minwidth=100, anchor="center", stretch=False)
 
         vsb = ttk.Scrollbar(files_lf, orient="vertical", command=self.files_tree.yview)
         hsb = ttk.Scrollbar(files_lf, orient="horizontal", command=self.files_tree.xview)
@@ -603,16 +616,27 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             return None
 
     def set_file_status(self, iid: str, status_text: str, spinning: bool = False):
-        """设置文件状态"""
+        """保留内部状态供统计使用，列表只显示面向用户的状态。"""
         def _apply():
+            display_status = display_task_status(status_text)
+            step_progress = display_task_progress(status_text)
             if spinning:
-                self.spinner_active[iid] = {"base": status_text, "idx": 0}
+                self.spinner_active[iid] = {"base": display_status, "idx": 0}
                 if self.spinner_job is None:
                     self.spinner_job = self.root.after(120, self._spinner_tick)
             else:
                 if iid in self.spinner_active:
                     del self.spinner_active[iid]
-                self.files_tree.set(iid, "status", status_text)
+                self.files_tree.set(iid, "status", display_status)
+
+            if step_progress:
+                self.files_tree.set(iid, "progress", step_progress)
+            elif display_status in {"✓ 已完成", "已跳过"}:
+                self.files_tree.set(iid, "progress", "100%")
+            elif display_status in {"等待处理", "生成失败", "已停止"}:
+                self.files_tree.set(iid, "progress", "—")
+
+            self.refresh_tree_overlays()
 
             if iid in getattr(self, "task_files", []):
                 self.task_statuses[iid] = status_text

@@ -238,8 +238,9 @@ def build_audio_metadata(
     file_list: List[str],
     part_num: int = 1,
     split_total: int = 1,
+    track_number: Optional[int] = None,
 ) -> Dict[str, str]:
-    """组装精简 MP3 标签：作者、书名、真实章节名。"""
+    """组装精简 MP3 标签：Title 以最终音轨顺序编号开头。"""
     metadata = dict(book_metadata or {})
     track_titles = metadata.get("tracks", {})
     if not isinstance(track_titles, dict):
@@ -259,12 +260,14 @@ def build_audio_metadata(
 
     if len(titles) == 1:
         title = titles[0]
-        if split_total > 1:
-            title += f"（第{part_num}部分）"
     elif len(titles) > 1:
         title = f"{titles[0]} — {titles[-1]}"
     else:
         title = ""
+
+    sequence = track_number if track_number is not None else part_num
+    if title and sequence and sequence > 0:
+        title = f"{int(sequence):03d} {title}"
 
     return {
         "title": title,
@@ -371,6 +374,7 @@ def _process_audio_chunk(
     split_total: int = 1,
     cover_path: Optional[str] = None,
     book_metadata: Optional[Dict[str, str]] = None,
+    track_number: Optional[int] = None,
 ):
     """
     处理一个音频块（包含文本合成和音频合并）
@@ -470,6 +474,7 @@ def _process_audio_chunk(
                 file_list,
                 part_num=part_num,
                 split_total=split_total,
+                track_number=track_number,
             )
             if cover_path or any(audio_metadata.values()):
                 for name in file_list:

@@ -13,6 +13,40 @@ import threading
 from audio_processor import find_existing_outputs_for_txt
 
 
+def display_txt_name(filename: str) -> str:
+    """仅在列表中隐藏 TXT 后缀，不改变真实文件名。"""
+    name = os.path.basename(filename or "")
+    return os.path.splitext(name)[0] if name.lower().endswith(".txt") else name
+
+
+def display_task_status(status_text: str) -> str:
+    """把内部任务状态转换为简洁的用户可见文案。"""
+    status = (status_text or "").strip().lstrip("✅").strip()
+    if not status or status == "待处理" or status.startswith("等待合并"):
+        return "等待处理"
+    if status.startswith("检查中"):
+        return "正在检查"
+    if status.startswith("已完成"):
+        return "✓ 已完成"
+    if status.startswith("已存在") or status.startswith("跳过"):
+        return "已跳过"
+    if status.startswith("已中断"):
+        return "已停止"
+    if status.startswith("失败") or "合成失败" in status:
+        return "生成失败"
+    if status.startswith(("准备合成", "合成中")):
+        return "正在生成语音"
+    if status.startswith(("合并中", "合并音频", "导出 MP3", "正在写入书籍信息")):
+        return "正在合成"
+    return status
+
+
+def display_task_progress(status_text: str) -> str:
+    """从内部状态中提取可靠的当前步骤，供进度列展示。"""
+    match = re.search(r"[（(]\s*(\d+)\s*/\s*(\d+)\s*[）)]", status_text or "")
+    return f"{match.group(1)} / {match.group(2)}" if match else ""
+
+
 class FileManagerMixin:
     """文件列表、目录监测、选择状态相关方法"""
 
@@ -240,7 +274,15 @@ class FileManagerMixin:
 
             self.files_tree.insert(
                 "", "end", iid=iid,
-                values=(check_mark, fname, size_str, str(chars), est_str, "检查中...", ""),
+                values=(
+                    check_mark,
+                    display_txt_name(fname),
+                    est_str,
+                    size_str,
+                    str(chars),
+                    display_task_status("检查中..."),
+                    "",
+                ),
                 tags=(tag,)
             )
 
@@ -327,8 +369,8 @@ class FileManagerMixin:
             current_values[2],
             current_values[3],
             current_values[4],
-            status_text,
-            current_values[6]
+            display_task_status(status_text),
+            "—",
         )
         self.files_tree.item(iid, values=new_values)
 
@@ -381,6 +423,12 @@ class FileManagerMixin:
             if bbox_prog:
                 x, y, w, h = bbox_prog
                 if not (y + h < 0 or y > tree_h):
+                    progress_text = self.files_tree.set(iid, "progress").strip()
+                    if progress_text:
+                        pb = self.tree_progress.get(iid)
+                        if pb:
+                            pb.place_forget()
+                        continue
                     var = self.progress_vars.get(iid)
                     if var is None:
                         var = tk.DoubleVar(value=0.0)

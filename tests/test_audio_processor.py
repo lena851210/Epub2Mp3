@@ -59,7 +59,7 @@ class AudioProcessorTests(unittest.TestCase):
             self.assertFalse(result)
             self.assertEqual(mp3_path.read_bytes(), b"original-audio")
 
-    def test_audio_metadata_uses_clean_chapter_titles(self):
+    def test_audio_metadata_uses_sequential_track_titles(self):
         single = build_audio_metadata(
             {
                 "album": "马斯克逻辑",
@@ -69,25 +69,28 @@ class AudioProcessorTests(unittest.TestCase):
                 },
             },
             ["002 理解科技革命.txt"],
+            track_number=1,
         )
         split = build_audio_metadata(
             {"album": "马斯克逻辑", "artist": "王煜全"},
             ["002 理解科技革命.txt"],
             part_num=2,
             split_total=3,
+            track_number=2,
         )
         merged = build_audio_metadata(
             {"album": "马斯克逻辑", "artist": "王煜全"},
             ["002 理解科技革命.txt", "003-1 科技潮流.txt"],
+            track_number=3,
         )
 
         self.assertEqual(single, {
-            "title": "理解科技革命：马斯克的成功",
+            "title": "001 理解科技革命：马斯克的成功",
             "album": "马斯克逻辑",
             "artist": "王煜全",
         })
-        self.assertEqual(split["title"], "理解科技革命（第2部分）")
-        self.assertEqual(merged["title"], "理解科技革命 — 科技潮流")
+        self.assertEqual(split["title"], "002 理解科技革命")
+        self.assertEqual(merged["title"], "003 理解科技革命 — 科技潮流")
 
     @patch("audio_processor.shutil.which", return_value="/usr/local/bin/ffmpeg")
     @patch("audio_processor.subprocess.run")
@@ -150,7 +153,7 @@ class AudioProcessorTests(unittest.TestCase):
                 output_path,
                 cover_path=str(cover_path),
                 metadata={
-                    "title": "测试",
+                    "title": "001 测试",
                     "album": "测试书",
                     "artist": "测试作者",
                 },

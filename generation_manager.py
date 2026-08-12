@@ -397,7 +397,7 @@ class GenerationMixin:
 
     def generate_plain_files(self, files: List[str], txt_dir: str, out_dir: str):
         """普通模式：每个 TXT 直接输出一个 MP3，不做按目标时长拆分/合并"""
-        for f in files:
+        for track_number, f in enumerate(files, 1):
             if self.stop_flag:
                 break
 
@@ -443,7 +443,8 @@ class GenerationMixin:
                 tts_with_retry=self.tts_with_retry,
                 cover_path=self.current_cover_path,
                 book_metadata=self.current_book_metadata,
-                split_total=1
+                split_total=1,
+                track_number=track_number,
             )
 
     def generate_smart_by_target(self, files: List[str], txt_dir: str, out_dir: str):
@@ -461,6 +462,7 @@ class GenerationMixin:
         """单文件转换模式 - 按目标时长分割"""
         target_minutes = int(self.target_duration_var.get())
         target_minutes = max(10, min(120, target_minutes))
+        track_number = 1
 
         for f in files:
             if self.stop_flag:
@@ -512,8 +514,10 @@ class GenerationMixin:
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
                         book_metadata=self.current_book_metadata,
-                        split_total=split_total
+                        split_total=split_total,
+                        track_number=track_number,
                     )
+                    track_number += 1
             else:
                 _process_audio_chunk(
                     text=text,
@@ -534,7 +538,9 @@ class GenerationMixin:
                     tts_with_retry=self.tts_with_retry,
                     cover_path=self.current_cover_path,
                     book_metadata=self.current_book_metadata,
+                    track_number=track_number,
                 )
+                track_number += 1
 
     def generate_merged_files(self, files: List[str], txt_dir: str, out_dir: str):
         """合并模式 - 支持长文本分割"""
@@ -579,6 +585,7 @@ class GenerationMixin:
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
                         book_metadata=self.current_book_metadata,
+                        track_number=part_num,
                     )
                     part_num += 1
                     current_text = ""
@@ -610,7 +617,8 @@ class GenerationMixin:
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
                         book_metadata=self.current_book_metadata,
-                        split_total=split_total
+                        split_total=split_total,
+                        track_number=part_num,
                     )
                     part_num += 1
                 continue
@@ -642,6 +650,7 @@ class GenerationMixin:
                         tts_with_retry=self.tts_with_retry,
                         cover_path=self.current_cover_path,
                         book_metadata=self.current_book_metadata,
+                        track_number=part_num,
                     )
                     part_num += 1
 
@@ -669,4 +678,5 @@ class GenerationMixin:
                 tts_with_retry=self.tts_with_retry,
                 cover_path=self.current_cover_path,
                 book_metadata=self.current_book_metadata,
+                track_number=part_num,
             )
