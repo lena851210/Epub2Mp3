@@ -74,8 +74,6 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         # UI 状态管理
         self.selection_states = {}
-        self.progress_vars = {}
-        self.tree_progress = {}
         self.file_chars = {}
         self.error_detail = {}
 
@@ -251,7 +249,6 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             lambda: update_horizontal_scrollbar(*self.files_tree.xview())
         )
 
-        self.files_tree.bind("<Configure>", lambda e: self._on_tree_configure())
         self.files_tree.bind("<Double-1>", self.on_tree_double_click)
         self.files_tree.bind("<Button-1>", self._on_tree_click)
 
@@ -562,10 +559,6 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         """设置状态栏文本"""
         self.root.after(0, lambda: self.status_var.set(text))
 
-    def _on_tree_configure(self):
-        """表格配置改变时刷新"""
-        self.refresh_tree_overlays()
-
     def estimate_duration_str(self, chars: int) -> str:
         """估算时长字符串"""
         wpm = max(1, self.wpm_var.get())
@@ -735,12 +728,10 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
             if step_progress:
                 self.files_tree.set(iid, "progress", step_progress)
-            elif display_status in {"✓ 已完成", "已跳过"}:
+            elif display_status in {"✅ 已完成", "↪ 已跳过"}:
                 self.files_tree.set(iid, "progress", "100%")
-            elif display_status in {"等待处理", "生成失败", "已停止"}:
+            elif display_status in {"等待处理", "❌ 生成失败", "■ 已停止"}:
                 self.files_tree.set(iid, "progress", "—")
-
-            self.refresh_tree_overlays()
 
             if iid in getattr(self, "task_files", []):
                 self.task_statuses[iid] = status_text

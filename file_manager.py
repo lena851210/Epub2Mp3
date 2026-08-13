@@ -5,12 +5,15 @@
 
 import os
 import re
-import tkinter as tk
 import platform
 import subprocess
 import threading
 
 from audio_processor import find_existing_outputs_for_txt
+
+
+SELECTED_MARK = "☑"
+UNSELECTED_MARK = "☐"
 
 
 def display_txt_name(filename: str) -> str:
@@ -27,13 +30,13 @@ def display_task_status(status_text: str) -> str:
     if status.startswith("检查中"):
         return "正在检查"
     if status.startswith("已完成"):
-        return "✓ 已完成"
+        return "✅ 已完成"
     if status.startswith("已存在") or status.startswith("跳过"):
-        return "已跳过"
+        return "↪ 已跳过"
     if status.startswith("已中断"):
-        return "已停止"
+        return "■ 已停止"
     if status.startswith("失败") or "合成失败" in status:
-        return "生成失败"
+        return "❌ 生成失败"
     if status.startswith(("准备合成", "合成中")):
         return "正在生成语音"
     if status.startswith(("合并中", "合并音频", "导出 MP3", "正在写入书籍信息")):
@@ -123,14 +126,6 @@ class FileManagerMixin:
 
         self.selection_states.clear()
         self.file_chars.clear()
-        self.progress_vars.clear()
-
-        for pb in self.tree_progress.values():
-            try:
-                pb.destroy()
-            except Exception:
-                pass
-        self.tree_progress.clear()
 
         self.files_info_var.set(info_text)
         self.update_action_buttons_state()
@@ -211,14 +206,6 @@ class FileManagerMixin:
 
         self.selection_states.clear()
         self.file_chars.clear()
-        self.progress_vars.clear()
-
-        for pb in self.tree_progress.values():
-            try:
-                pb.destroy()
-            except Exception:
-                pass
-        self.tree_progress.clear()
 
         if not os.path.isdir(directory):
             self.files_info_var.set("当前目录无效")
@@ -271,7 +258,7 @@ class FileManagerMixin:
             # 初始状态：未决定是否勾选
             self.selection_states[iid] = False
 
-            check_mark = ""
+            check_mark = UNSELECTED_MARK
             tag = "oddrow" if idx % 2 else "evenrow"
 
             self.files_tree.insert(
@@ -359,7 +346,7 @@ class FileManagerMixin:
             return
 
         self.selection_states[iid] = is_selected
-        check_mark = "✓" if is_selected else ""
+        check_mark = SELECTED_MARK if is_selected else UNSELECTED_MARK
 
         current_values = self.files_tree.item(iid, "values")
         if not current_values or len(current_values) < 7:
@@ -410,47 +397,11 @@ class FileManagerMixin:
             return
 
         self.selection_states[iid] = not self.selection_states.get(iid, False)
-        check_mark = "✓" if self.selection_states[iid] else ""
+        check_mark = SELECTED_MARK if self.selection_states[iid] else UNSELECTED_MARK
         current_values = self.files_tree.item(iid, "values")
         new_values = (check_mark,) + current_values[1:]
         self.files_tree.item(iid, values=new_values)
         self.update_selection_info()
-
-    def refresh_tree_overlays(self):
-        """刷新进度条位置"""
-        tree_h = self.files_tree.winfo_height()
-
-        for iid in self.files_tree.get_children(""):
-            bbox_prog = self.files_tree.bbox(iid, column="#7")
-            if bbox_prog:
-                x, y, w, h = bbox_prog
-                if not (y + h < 0 or y > tree_h):
-                    progress_text = self.files_tree.set(iid, "progress").strip()
-                    if progress_text:
-                        pb = self.tree_progress.get(iid)
-                        if pb:
-                            pb.place_forget()
-                        continue
-                    var = self.progress_vars.get(iid)
-                    if var is None:
-                        var = tk.DoubleVar(value=0.0)
-                        self.progress_vars[iid] = var
-                    pb = self.tree_progress.get(iid)
-                    if pb is None:
-                        from tkinter import ttk
-                        pb = ttk.Progressbar(
-                            self.files_tree,
-                            orient="horizontal",
-                            mode="determinate",
-                            maximum=100.0,
-                            variable=var
-                        )
-                        self.tree_progress[iid] = pb
-                    pb.place(x=x + 6, y=y + 6, width=max(40, w - 12), height=h - 12)
-                else:
-                    pb = self.tree_progress.get(iid)
-                    if pb:
-                        pb.place_forget()
 
     def update_selection_info(self):
         """更新选择信息"""
@@ -470,7 +421,7 @@ class FileManagerMixin:
         for iid in self.files_tree.get_children():
             self.selection_states[iid] = True
             current_values = self.files_tree.item(iid, "values")
-            self.files_tree.item(iid, values=("✓",) + current_values[1:])
+            self.files_tree.item(iid, values=(SELECTED_MARK,) + current_values[1:])
         self.update_selection_info()
 
     def unselect_all_files(self):
@@ -478,7 +429,7 @@ class FileManagerMixin:
         for iid in self.files_tree.get_children():
             self.selection_states[iid] = False
             current_values = self.files_tree.item(iid, "values")
-            self.files_tree.item(iid, values=("",) + current_values[1:])
+            self.files_tree.item(iid, values=(UNSELECTED_MARK,) + current_values[1:])
         self.update_selection_info()
 
     def invert_selection(self):
@@ -486,7 +437,7 @@ class FileManagerMixin:
         for iid in self.files_tree.get_children():
             cur = self.selection_states.get(iid, True)
             self.selection_states[iid] = not cur
-            check_mark = "✓" if self.selection_states[iid] else ""
+            check_mark = SELECTED_MARK if self.selection_states[iid] else UNSELECTED_MARK
             current_values = self.files_tree.item(iid, "values")
             self.files_tree.item(iid, values=(check_mark,) + current_values[1:])
         self.update_selection_info()

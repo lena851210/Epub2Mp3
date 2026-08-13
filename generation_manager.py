@@ -220,13 +220,6 @@ class GenerationMixin:
         progress = max(0.0, min(100.0, float(percent)))
 
         def apply():
-            var = self.progress_vars.get(iid)
-            if var is None:
-                import tkinter as tk
-                var = tk.DoubleVar(value=0.0)
-                self.progress_vars[iid] = var
-            var.set(progress)
-
             if iid in getattr(self, "task_files", []):
                 self.task_progress[iid] = progress
                 self.update_overall_progress()

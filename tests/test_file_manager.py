@@ -16,10 +16,10 @@ class FileManagerDisplayTests(unittest.TestCase):
         self.assertEqual(display_task_progress(raw), "2 / 2")
 
     def test_terminal_statuses_are_consistent(self):
-        self.assertEqual(display_task_status("已完成（时长3:44，含书籍信息）"), "✓ 已完成")
-        self.assertEqual(display_task_status("已存在(2段)"), "已跳过")
-        self.assertEqual(display_task_status("失败：无法读取文件"), "生成失败")
-        self.assertEqual(display_task_status("已中断"), "已停止")
+        self.assertEqual(display_task_status("已完成（时长3:44，含书籍信息）"), "✅ 已完成")
+        self.assertEqual(display_task_status("已存在(2段)"), "↪ 已跳过")
+        self.assertEqual(display_task_status("失败：无法读取文件"), "❌ 生成失败")
+        self.assertEqual(display_task_status("已中断"), "■ 已停止")
         self.assertEqual(display_task_status("等待合并（25 段）"), "等待处理")
 
 
