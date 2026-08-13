@@ -17,6 +17,11 @@ class StoppedGeneration(GenerationMixin):
 
 
 class GenerationManagerTests(unittest.TestCase):
+    def test_elapsed_time_uses_fixed_hour_minute_second_format(self):
+        self.assertEqual(GenerationMixin.format_elapsed_time(0), "00:00:00")
+        self.assertEqual(GenerationMixin.format_elapsed_time(3661.9), "01:01:01")
+        self.assertEqual(GenerationMixin.format_elapsed_time(90061), "25:01:01")
+
     def test_stopped_task_does_not_start_tts_retry(self):
         generator = StoppedGeneration()
 

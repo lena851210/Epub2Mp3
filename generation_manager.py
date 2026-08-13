@@ -67,6 +67,56 @@ def summarize_task(task_files, task_statuses, task_progress):
 class GenerationMixin:
     """音频生成相关方法"""
 
+    @staticmethod
+    def format_elapsed_time(seconds: float) -> str:
+        """把任务耗时格式化为固定宽度，长任务超过 24 小时也能正确显示。"""
+        total_seconds = max(0, int(seconds))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def get_elapsed_seconds(self) -> int:
+        """取得当前或最近一次任务的总耗时。"""
+        started_at = getattr(self, "task_started_at", None)
+        if started_at is None:
+            return int(getattr(self, "last_elapsed_seconds", 0))
+        return max(0, int(time.monotonic() - started_at))
+
+    def _refresh_elapsed_time(self):
+        """每秒刷新一次总耗时；停止请求后继续计时，直到任务真正退出。"""
+        elapsed_seconds = self.get_elapsed_seconds()
+        self.last_elapsed_seconds = elapsed_seconds
+        self.elapsed_time_var.set(f"总耗时：{self.format_elapsed_time(elapsed_seconds)}")
+        self.elapsed_timer_job = None
+        if self.is_generating:
+            self.elapsed_timer_job = self.root.after(1000, self._refresh_elapsed_time)
+
+    def start_elapsed_timer(self):
+        """开始一次新的转换计时。"""
+        if getattr(self, "elapsed_timer_job", None) is not None:
+            try:
+                self.root.after_cancel(self.elapsed_timer_job)
+            except Exception:
+                pass
+        self.task_started_at = time.monotonic()
+        self.last_elapsed_seconds = 0
+        self.elapsed_time_var.set("总耗时：00:00:00")
+        self.elapsed_timer_job = self.root.after(1000, self._refresh_elapsed_time)
+
+    def stop_elapsed_timer(self):
+        """冻结最终耗时并取消界面定时任务。"""
+        if getattr(self, "elapsed_timer_job", None) is not None:
+            try:
+                self.root.after_cancel(self.elapsed_timer_job)
+            except Exception:
+                pass
+        self.elapsed_timer_job = None
+        self.last_elapsed_seconds = self.get_elapsed_seconds()
+        self.task_started_at = None
+        self.elapsed_time_var.set(
+            f"总耗时：{self.format_elapsed_time(self.last_elapsed_seconds)}"
+        )
+
     def estimate_duration(self, text: str) -> float:
         """估算时长（分钟）"""
         wpm = max(1, self.wpm_var.get())
@@ -260,6 +310,7 @@ class GenerationMixin:
         self.task_statuses = {}
         self.task_progress = {file_name: 0.0 for file_name in files}
         self.reset_overall_progress()
+        self.start_elapsed_timer()
 
         if not self._has_ffmpeg():
             self.set_status("未检测到 ffmpeg，若分段>1将无法合并；请先安装 ffmpeg。")
@@ -296,6 +347,7 @@ class GenerationMixin:
             )
         finally:
             def finish():
+                self.stop_elapsed_timer()
                 self.is_generating = False
                 self.generation_thread = None
                 self.update_action_buttons_state()
@@ -353,6 +405,7 @@ class GenerationMixin:
         )
         if summary["pending"]:
             body += f"\n未完成：{summary['pending']} 个"
+        body += f"\n总耗时：{self.format_elapsed_time(self.get_elapsed_seconds())}"
         body += f"\n\n音频目录：\n{out_dir}"
 
         messagebox.showinfo(title, body)
@@ -393,6 +446,8 @@ class GenerationMixin:
         else:
             self.set_status(f"所有任务处理完成。输出目录：{out_dir}")
 
+        # 先冻结真实处理耗时，再显示结果；避免把用户阅读结果弹窗的时间算进去。
+        self.root.after(0, self.stop_elapsed_timer)
         self.root.after(0, lambda path=out_dir: self.show_task_result(path))
 
     def generate_plain_files(self, files: List[str], txt_dir: str, out_dir: str):

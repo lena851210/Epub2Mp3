@@ -68,6 +68,9 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.task_files = []
         self.task_statuses = {}
         self.task_progress = {}
+        self.task_started_at = None
+        self.elapsed_timer_job = None
+        self.last_elapsed_seconds = 0
 
         # UI 状态管理
         self.selection_states = {}
@@ -321,6 +324,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             label_row = ttk.Frame(frame)
             label_row.pack(fill="x", pady=(0, 2))
             ttk.Label(label_row, text=f"{label_text}:").pack(side="left")
+            ttk.Label(label_row, textvariable=label_var, anchor="w").pack(side="left", padx=(6, 0))
             ttk.Button(
                 label_row,
                 text="↺",
@@ -328,8 +332,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
                 width=1,
                 cursor="pointinghand",
                 style="ResetIcon.TButton",
-            ).pack(side="left", padx=(4, 6))
-            ttk.Label(label_row, textvariable=label_var, anchor="w").pack(side="left")
+            ).pack(side="left", padx=(5, 0))
             scale = ttk.Scale(frame, from_=from_, to=to, variable=var, orient="horizontal")
             scale.pack(fill="x")
 
@@ -509,6 +512,14 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             textvariable=self.overall_progress_text_var,
             anchor="e"
         ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        self.elapsed_time_var = tk.StringVar(value="总耗时：00:00:00")
+        ttk.Label(
+            status_text_row,
+            textvariable=self.elapsed_time_var,
+            anchor="e",
+            foreground="#666",
+        ).grid(row=0, column=2, sticky="e", padx=(12, 0))
 
         self.overall_progress_var = tk.DoubleVar(value=0.0)
         self.overall_progress_bar = ttk.Progressbar(
@@ -1022,6 +1033,13 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
     def on_closing(self):
         """窗口关闭时保存配置"""
         self.stop_flag = True
+
+        if self.elapsed_timer_job is not None:
+            try:
+                self.root.after_cancel(self.elapsed_timer_job)
+            except Exception:
+                pass
+            self.elapsed_timer_job = None
 
         if self.dir_watch_job is not None:
             try:
