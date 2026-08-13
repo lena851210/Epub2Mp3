@@ -7,9 +7,11 @@ from unittest.mock import Mock, patch
 from audio_processor import (
     _process_audio_chunk,
     build_audio_metadata,
+    build_output_path,
     embed_cover_art,
     embed_mp3_metadata,
 )
+from models import TTSResult
 
 
 class Value:
@@ -125,7 +127,7 @@ class AudioProcessorTests(unittest.TestCase):
 
             def tts_with_retry(_text, output_file, **_kwargs):
                 Path(output_file).write_bytes(b"audio")
-                return True
+                return TTSResult.SUCCESS
 
             output_path = _process_audio_chunk(
                 text="这是测试正文。",
@@ -148,9 +150,9 @@ class AudioProcessorTests(unittest.TestCase):
                 book_metadata={"album": "测试书", "artist": "测试作者"},
             )
 
-            self.assertIsNotNone(output_path)
+            self.assertEqual(output_path, TTSResult.SUCCESS)
             embed_mock.assert_called_once_with(
-                output_path,
+                build_output_path(str(root), ["001 测试.txt"], 1),
                 cover_path=str(cover_path),
                 metadata={
                     "title": "001 测试",
@@ -159,6 +161,64 @@ class AudioProcessorTests(unittest.TestCase):
                 },
             )
             self.assertTrue(any("含书籍信息" in status for status in statuses))
+
+    def test_failed_segment_never_creates_formal_mp3_and_cleans_partial_temp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def failed_tts(_text, output_file, **_kwargs):
+                Path(output_file).write_bytes(b"partial-audio")
+                return TTSResult.FAILED
+
+            result = _process_audio_chunk(
+                text="这是不能缺失的正文。",
+                out_dir=str(root),
+                part_num=1,
+                file_list=["001 失败测试.txt"],
+                edge_tts_wrapper=Mock(),
+                voice_var=Value("voice"),
+                speed_var=Value(1.0),
+                pitch_var=Value(0),
+                volume_var=Value(0),
+                set_file_status=lambda *_args, **_kwargs: None,
+                set_file_progress=lambda *_args, **_kwargs: None,
+                set_error=lambda *_args, **_kwargs: None,
+                get_mp3_duration_str=lambda _path: "",
+                seconds_to_str=lambda _seconds: "",
+                stop_flag_check=lambda: False,
+                tts_with_retry=failed_tts,
+            )
+
+            self.assertEqual(result, TTSResult.FAILED)
+            self.assertFalse(Path(build_output_path(str(root), ["001 失败测试.txt"], 1)).exists())
+            self.assertEqual(list(root.glob("__tmp_*.mp3")), [])
+
+    def test_existing_successful_mp3_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(build_output_path(temp_dir, ["001 已完成.txt"], 1))
+            output_path.write_bytes(b"completed-audio")
+
+            result = _process_audio_chunk(
+                text="不会重新生成。",
+                out_dir=temp_dir,
+                part_num=1,
+                file_list=["001 已完成.txt"],
+                edge_tts_wrapper=Mock(),
+                voice_var=Value("voice"),
+                speed_var=Value(1.0),
+                pitch_var=Value(0),
+                volume_var=Value(0),
+                set_file_status=lambda *_args, **_kwargs: None,
+                set_file_progress=lambda *_args, **_kwargs: None,
+                set_error=lambda *_args, **_kwargs: None,
+                get_mp3_duration_str=lambda _path: "00:10",
+                seconds_to_str=lambda _seconds: "",
+                stop_flag_check=lambda: False,
+                tts_with_retry=Mock(),
+            )
+
+            self.assertEqual(result, TTSResult.SUCCESS)
+            self.assertEqual(output_path.read_bytes(), b"completed-audio")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import tempfile
 import platform
 import shutil
 import time
+import threading
 from typing import Optional
 
 from pydub import AudioSegment
@@ -42,6 +43,47 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
     """有声书生成工具 - 主应用类"""
 
     @staticmethod
+    def _create_checkbox_image(root, checked: bool):
+        """创建随 Treeview 行滚动的系统风格 checkbox 图标。"""
+        size = 18
+        image = tk.PhotoImage(master=root, width=size, height=size)
+        image.blank()
+
+        def inside_rounded_rect(x, y, inset, radius):
+            left = top = inset
+            right = bottom = size - 1 - inset
+            nearest_x = min(max(x, left + radius), right - radius)
+            nearest_y = min(max(y, top + radius), bottom - radius)
+            return (
+                left <= x <= right
+                and top <= y <= bottom
+                and (x - nearest_x) ** 2 + (y - nearest_y) ** 2 <= radius ** 2
+            )
+
+        for y in range(size):
+            for x in range(size):
+                if checked and inside_rounded_rect(x, y, 1, 4):
+                    image.put("#0A84FF", (x, y))
+                elif not checked and inside_rounded_rect(x, y, 2, 3):
+                    color = "#FFFFFF" if inside_rounded_rect(x, y, 3, 2) else "#8E8E93"
+                    image.put(color, (x, y))
+
+        if checked:
+            # 以两段粗线绘制白色 checkmark，尺寸接近 macOS 原生 checkbox。
+            segments = ((4.7, 9.2, 7.7, 12.1), (7.5, 12.0, 13.6, 5.8))
+            for y in range(size):
+                for x in range(size):
+                    for x1, y1, x2, y2 in segments:
+                        dx, dy = x2 - x1, y2 - y1
+                        length_sq = dx * dx + dy * dy
+                        t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
+                        px, py = x1 + t * dx, y1 + t * dy
+                        if (x - px) ** 2 + (y - py) ** 2 <= 1.15 ** 2:
+                            image.put("#FFFFFF", (x, y))
+                            break
+        return image
+
+    @staticmethod
     def _create_root_window():
         """创建主窗口；拖放扩展异常时保证 App 仍能启动。"""
         if TkinterDnD is not None:
@@ -61,8 +103,10 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.root.geometry("960x680")
         self.root.minsize(720, 560)
         self.stop_flag = False
+        self.tts_cancel_event = threading.Event()
         self.is_generating = False
         self.generation_thread = None
+        self.exit_after_stop = False
         self.is_previewing = False
         self.is_importing_epub = False
         self.task_files = []
@@ -111,7 +155,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         base_font = ("Helvetica" if sysname == "Darwin" else "Segoe UI", 11)
         style.configure(".", font=base_font)
         style.configure("Treeview.Heading", font=(base_font[0], base_font[1], "bold"))
-        style.configure("Treeview", rowheight=28)
+        style.configure("Treeview", rowheight=28, indent=0)
         button_padding = (10, 7, 10, 5) if sysname == "Darwin" else (10, 6)
         primary_padding = (12, 8, 12, 6) if sysname == "Darwin" else (12, 7)
         style.configure("App.TButton", font=base_font, padding=button_padding, anchor="center")
@@ -209,9 +253,11 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         )
         self.import_epub_btn.pack(side="right")
 
-        columns = ("select", "name", "est", "size", "chars", "status", "progress")
-        self.files_tree = ttk.Treeview(files_lf, columns=columns, show="headings")
-        self.files_tree.heading("select", text="选择")
+        columns = ("name", "est", "size", "chars", "status", "progress")
+        self.files_tree = ttk.Treeview(files_lf, columns=columns, show="tree headings")
+        self.checkbox_unchecked_image = self._create_checkbox_image(self.root, checked=False)
+        self.checkbox_checked_image = self._create_checkbox_image(self.root, checked=True)
+        self.files_tree.heading("#0", text="选择", anchor="center")
         self.files_tree.heading("name", text="章节")
         self.files_tree.heading("est", text="预估时长")
         self.files_tree.heading("size", text="大小(KB)")
@@ -219,7 +265,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.files_tree.heading("status", text="状态")
         self.files_tree.heading("progress", text="进度")
 
-        self.files_tree.column("select", width=52, minwidth=44, anchor="center", stretch=False)
+        self.files_tree.column("#0", width=52, minwidth=44, anchor="center", stretch=False)
         self.files_tree.column("name", width=330, minwidth=250, anchor="w", stretch=True)
         self.files_tree.column("est", width=90, minwidth=82, anchor="center", stretch=False)
         self.files_tree.column("size", width=80, minwidth=78, anchor="center", stretch=False)
@@ -1022,8 +1068,32 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
             self.update_action_buttons_state()
 
     def on_closing(self):
-        """窗口关闭时保存配置"""
+        """运行中关闭先确认，并等待当前任务安全停止。"""
+        if self.is_generating:
+            if self.exit_after_stop:
+                self.set_status("正在安全停止当前任务，请稍候...")
+                return
+
+            should_exit = messagebox.askyesno(
+                "停止任务并退出？",
+                "转换仍在进行，确定要停止任务并退出吗？\n\n"
+                "已经成功生成的 MP3 会保留，当前未完成的片段将被清理。",
+                icon="warning",
+            )
+            if not should_exit:
+                return
+
+            self.exit_after_stop = True
+            self.stop_generation()
+            self.set_status("正在安全停止当前任务，完成后将自动退出...")
+            return
+
+        self._close_app()
+
+    def _close_app(self):
+        """保存配置并关闭窗口；只在后台任务已退出后调用。"""
         self.stop_flag = True
+        self.tts_cancel_event.set()
 
         if self.elapsed_timer_job is not None:
             try:

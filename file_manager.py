@@ -12,10 +12,6 @@ import threading
 from audio_processor import find_existing_outputs_for_txt
 
 
-SELECTED_MARK = "☑"
-UNSELECTED_MARK = "☐"
-
-
 def display_txt_name(filename: str) -> str:
     """仅在列表中隐藏 TXT 后缀，不改变真实文件名。"""
     name = os.path.basename(filename or "")
@@ -29,6 +25,8 @@ def display_task_status(status_text: str) -> str:
         return "等待处理"
     if status.startswith("检查中"):
         return "正在检查"
+    if status.startswith("正在重试"):
+        return status
     if status.startswith("已完成"):
         return "✅ 已完成"
     if status.startswith("已存在") or status.startswith("跳过"):
@@ -258,13 +256,12 @@ class FileManagerMixin:
             # 初始状态：未决定是否勾选
             self.selection_states[iid] = False
 
-            check_mark = UNSELECTED_MARK
             tag = "oddrow" if idx % 2 else "evenrow"
 
             self.files_tree.insert(
                 "", "end", iid=iid,
+                image=self.checkbox_unchecked_image,
                 values=(
-                    check_mark,
                     display_txt_name(fname),
                     est_str,
                     size_str,
@@ -346,22 +343,23 @@ class FileManagerMixin:
             return
 
         self.selection_states[iid] = is_selected
-        check_mark = SELECTED_MARK if is_selected else UNSELECTED_MARK
-
         current_values = self.files_tree.item(iid, "values")
-        if not current_values or len(current_values) < 7:
+        if not current_values or len(current_values) < 6:
             return
 
         new_values = (
-            check_mark,
+            current_values[0],
             current_values[1],
             current_values[2],
             current_values[3],
-            current_values[4],
             display_task_status(status_text),
             "—",
         )
-        self.files_tree.item(iid, values=new_values)
+        self.files_tree.item(
+            iid,
+            image=(self.checkbox_checked_image if is_selected else self.checkbox_unchecked_image),
+            values=new_values,
+        )
 
         self._audio_check_done = idx
         self.files_info_var.set(f"正在检查音频状态 {idx}/{total} ...")
@@ -385,7 +383,7 @@ class FileManagerMixin:
         if not row or not col or region != "cell":
             return
 
-        if col == "#1":
+        if col == "#0":
             self._toggle_selection(row)
             return "break"
 
@@ -397,10 +395,14 @@ class FileManagerMixin:
             return
 
         self.selection_states[iid] = not self.selection_states.get(iid, False)
-        check_mark = SELECTED_MARK if self.selection_states[iid] else UNSELECTED_MARK
-        current_values = self.files_tree.item(iid, "values")
-        new_values = (check_mark,) + current_values[1:]
-        self.files_tree.item(iid, values=new_values)
+        self.files_tree.item(
+            iid,
+            image=(
+                self.checkbox_checked_image
+                if self.selection_states[iid]
+                else self.checkbox_unchecked_image
+            ),
+        )
         self.update_selection_info()
 
     def update_selection_info(self):
@@ -420,16 +422,14 @@ class FileManagerMixin:
         """全选"""
         for iid in self.files_tree.get_children():
             self.selection_states[iid] = True
-            current_values = self.files_tree.item(iid, "values")
-            self.files_tree.item(iid, values=(SELECTED_MARK,) + current_values[1:])
+            self.files_tree.item(iid, image=self.checkbox_checked_image)
         self.update_selection_info()
 
     def unselect_all_files(self):
         """全不选"""
         for iid in self.files_tree.get_children():
             self.selection_states[iid] = False
-            current_values = self.files_tree.item(iid, "values")
-            self.files_tree.item(iid, values=(UNSELECTED_MARK,) + current_values[1:])
+            self.files_tree.item(iid, image=self.checkbox_unchecked_image)
         self.update_selection_info()
 
     def invert_selection(self):
@@ -437,9 +437,14 @@ class FileManagerMixin:
         for iid in self.files_tree.get_children():
             cur = self.selection_states.get(iid, True)
             self.selection_states[iid] = not cur
-            check_mark = SELECTED_MARK if self.selection_states[iid] else UNSELECTED_MARK
-            current_values = self.files_tree.item(iid, "values")
-            self.files_tree.item(iid, values=(check_mark,) + current_values[1:])
+            self.files_tree.item(
+                iid,
+                image=(
+                    self.checkbox_checked_image
+                    if self.selection_states[iid]
+                    else self.checkbox_unchecked_image
+                ),
+            )
         self.update_selection_info()
 
     def on_tree_double_click(self, event):
@@ -453,7 +458,7 @@ class FileManagerMixin:
         if not row:
             return
 
-        if col == "#2":
+        if col == "#1":
             path = os.path.join(self.txt_dir.get(), row)
             self.open_text_preview(path)
 

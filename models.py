@@ -9,7 +9,9 @@ import json
 import threading
 import unicodedata
 import asyncio
+import contextlib
 import warnings
+from enum import Enum
 from typing import Dict, Any, List, Tuple
 
 from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
@@ -22,6 +24,22 @@ DEFAULT_SPEED = 0.8
 DEFAULT_PITCH = 0
 DEFAULT_VOLUME = 100
 DEFAULT_WORDS_PER_MINUTE = int(BASE_WORDS_PER_MINUTE * DEFAULT_SPEED)
+
+
+class TTSResult(str, Enum):
+    """一次 TTS segment 的明确结果，避免把用户停止误判为失败。"""
+
+    SUCCESS = "success"
+    FAILED = "failed"
+    STOPPED = "stopped"
+
+
+class TTSRequestTimeout(TimeoutError):
+    """单个 TTS segment 超过允许的总等待时间。"""
+
+
+class TTSRequestStopped(Exception):
+    """用户主动取消当前 TTS segment。"""
 
 VOICE_MAPPING = {
     "晓晓(女)": "zh-CN-XiaoxiaoNeural",
@@ -241,8 +259,18 @@ class EdgeTTSWrapper:
 
         return DEFAULT_VOICE_NAME
 
-    def text_to_speech(self, text: str, voice: str, speed: float, pitch: float, volume: float, output_file: str):
-        """文本转语音"""
+    def text_to_speech(
+        self,
+        text: str,
+        voice: str,
+        speed: float,
+        pitch: float,
+        volume: float,
+        output_file: str,
+        total_timeout: float = 75.0,
+        cancel_event: threading.Event = None,
+    ):
+        """文本转语音；支持单 segment 总超时和用户主动取消。"""
         edge_voice = self._resolve_voice_code(voice)
 
         async def _synth():
@@ -253,7 +281,39 @@ class EdgeTTSWrapper:
                 pitch=f"{pitch:+.0f}Hz",
                 volume=f"{volume:+.0f}%"
             )
-            await communicate.save(output_file)
+            save_task = asyncio.create_task(communicate.save(output_file))
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max(0.01, float(total_timeout))
+
+            try:
+                while not save_task.done():
+                    if cancel_event is not None and cancel_event.is_set():
+                        save_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await save_task
+                        raise TTSRequestStopped("用户已停止当前语音请求")
+
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        save_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await save_task
+                        raise TTSRequestTimeout(
+                            f"单段语音请求超过 {float(total_timeout):.0f} 秒"
+                        )
+
+                    done, _pending = await asyncio.wait(
+                        {save_task},
+                        timeout=min(0.25, remaining),
+                    )
+                    if done:
+                        await save_task
+                        return
+            finally:
+                if not save_task.done():
+                    save_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await save_task
 
         loop = asyncio.new_event_loop()
         try:

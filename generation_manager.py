@@ -6,11 +6,13 @@
 import os
 import time
 import threading
+from datetime import datetime
 from typing import List, Tuple, Optional
 from tkinter import messagebox
 
-from audio_processor import _process_audio_chunk, find_existing_outputs_for_txt
+from audio_processor import _process_audio_chunk, build_output_path, find_existing_outputs_for_txt
 from epub_processor import find_saved_epub_cover, find_saved_epub_metadata
+from models import TTSRequestStopped, TTSResult
 
 
 def classify_task_status(status_text: str) -> Optional[str]:
@@ -230,22 +232,83 @@ class GenerationMixin:
         """设置错误信息"""
         self.error_detail[iid] = str(exc)
 
-    def tts_with_retry(self, text: str, output_file: str, iid_for_error: Optional[str] = None, max_retries: int = 3) -> bool:
-        """TTS 转换 - 支持重试"""
+    def calculate_segment_timeout(self, text: str) -> float:
+        """按实际字数与语速计算单段总超时，限制在 30~75 秒。"""
+        char_count = len((text or "").replace(" ", "").replace("\n", "").replace("\t", ""))
+        chars_per_minute = max(1, int(self.wpm_var.get()))
+        estimated_audio_seconds = char_count / chars_per_minute * 60.0
+        return min(75.0, max(30.0, estimated_audio_seconds * 0.45 + 14.0))
+
+    def log_tts_attempt(
+        self,
+        *,
+        iid: Optional[str],
+        attempt: int,
+        max_attempts: int,
+        elapsed_seconds: float,
+        timeout_seconds: float,
+        result: TTSResult,
+        error: Optional[Exception] = None,
+    ):
+        """记录 segment 请求耗时，供后续校准 timeout；不增加复杂 UI。"""
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_runtime.log")
+        safe_name = os.path.basename(iid or "unknown")
+        error_text = str(error or "").replace("\n", " ").strip()
+        line = (
+            f"{datetime.now().isoformat(timespec='seconds')}\t"
+            f"file={safe_name}\tattempt={attempt}/{max_attempts}\t"
+            f"elapsed={elapsed_seconds:.2f}s\ttimeout={timeout_seconds:.0f}s\t"
+            f"result={result.value}"
+        )
+        if error_text:
+            line += f"\terror={error_text[:300]}"
+        try:
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(line + "\n")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _remove_incomplete_segment(output_file: str):
+        """删除当前未完成临时文件；正式成功文件不会传入这里。"""
+        try:
+            if os.path.exists(output_file):
+                os.remove(output_file)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _remove_incomplete_split_outputs(paths):
+        """回收本轮未完整章节刚生成的正式分段，不触碰运行前已有文件。"""
+        for path in paths:
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+    def tts_with_retry(self, text: str, output_file: str, iid_for_error: Optional[str] = None, max_retries: int = 3) -> TTSResult:
+        """TTS 转换：首次尝试失败后最多重试两次。"""
         last_exc = None
         parent = os.path.dirname(output_file) or "."
         os.makedirs(parent, exist_ok=True)
+        timeout_seconds = self.calculate_segment_timeout(text)
 
         for n in range(1, max_retries + 1):
-            if self.stop_flag:
-                return False
+            if self.stop_flag or self.tts_cancel_event.is_set():
+                self._remove_incomplete_segment(output_file)
+                return TTSResult.STOPPED
 
+            if n > 1 and iid_for_error:
+                self.set_file_status(
+                    iid_for_error,
+                    f"正在重试 · {n - 1}/{max_retries - 1}",
+                    spinning=True,
+                )
+
+            started_at = time.monotonic()
             try:
-                if os.path.exists(output_file):
-                    try:
-                        os.remove(output_file)
-                    except Exception:
-                        pass
+                self._remove_incomplete_segment(output_file)
 
                 self.edge.text_to_speech(
                     text=text,
@@ -253,23 +316,55 @@ class GenerationMixin:
                     speed=self.speed_var.get(),
                     pitch=self.pitch_var.get(),
                     volume=self.volume_var.get(),
-                    output_file=output_file
+                    output_file=output_file,
+                    total_timeout=timeout_seconds,
+                    cancel_event=self.tts_cancel_event,
                 )
 
                 if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                    return True
+                    self.log_tts_attempt(
+                        iid=iid_for_error,
+                        attempt=n,
+                        max_attempts=max_retries,
+                        elapsed_seconds=time.monotonic() - started_at,
+                        timeout_seconds=timeout_seconds,
+                        result=TTSResult.SUCCESS,
+                    )
+                    return TTSResult.SUCCESS
                 raise RuntimeError(f"TTS输出为空或未生成: {os.path.basename(output_file)}")
 
+            except TTSRequestStopped as e:
+                self._remove_incomplete_segment(output_file)
+                self.log_tts_attempt(
+                    iid=iid_for_error,
+                    attempt=n,
+                    max_attempts=max_retries,
+                    elapsed_seconds=time.monotonic() - started_at,
+                    timeout_seconds=timeout_seconds,
+                    result=TTSResult.STOPPED,
+                    error=e,
+                )
+                return TTSResult.STOPPED
             except Exception as e:
                 last_exc = e
-                if self.stop_flag:
-                    return False
+                self._remove_incomplete_segment(output_file)
+                self.log_tts_attempt(
+                    iid=iid_for_error,
+                    attempt=n,
+                    max_attempts=max_retries,
+                    elapsed_seconds=time.monotonic() - started_at,
+                    timeout_seconds=timeout_seconds,
+                    result=TTSResult.FAILED,
+                    error=e,
+                )
+                if self.stop_flag or self.tts_cancel_event.is_set():
+                    return TTSResult.STOPPED
                 if n < max_retries:
                     time.sleep(min(1.5, 0.5 * n))
 
         if iid_for_error:
             self.set_error(iid_for_error, last_exc)
-        return False
+        return TTSResult.FAILED
 
     def start_generation(self):
         """开始转换任务"""
@@ -298,6 +393,7 @@ class GenerationMixin:
             return
 
         self.stop_flag = False
+        self.tts_cancel_event.clear()
         self.is_generating = True
         self.task_files = list(files)
         self.task_statuses = {}
@@ -323,7 +419,8 @@ class GenerationMixin:
             return
 
         self.stop_flag = True
-        self.set_status("已请求停止；当前语音片段完成后将中止任务...")
+        self.tts_cancel_event.set()
+        self.set_status("已请求停止；正在取消当前语音请求...")
 
     def _run_generation_task(self):
         """在后台运行转换，并确保按钮状态最终恢复。"""
@@ -344,6 +441,8 @@ class GenerationMixin:
                 self.is_generating = False
                 self.generation_thread = None
                 self.update_action_buttons_state()
+                if getattr(self, "exit_after_stop", False):
+                    self._close_app()
 
             try:
                 self.root.after(0, finish)
@@ -441,7 +540,8 @@ class GenerationMixin:
 
         # 先冻结真实处理耗时，再显示结果；避免把用户阅读结果弹窗的时间算进去。
         self.root.after(0, self.stop_elapsed_timer)
-        self.root.after(0, lambda path=out_dir: self.show_task_result(path))
+        if not getattr(self, "exit_after_stop", False):
+            self.root.after(0, lambda path=out_dir: self.show_task_result(path))
 
     def generate_plain_files(self, files: List[str], txt_dir: str, out_dir: str):
         """普通模式：每个 TXT 直接输出一个 MP3，不做按目标时长拆分/合并"""
@@ -539,11 +639,19 @@ class GenerationMixin:
             if file_duration > target_minutes:
                 sub_parts = self.split_long_text(text, target_minutes, f)
                 split_total = len(sub_parts)
+                created_split_outputs = []
 
                 for idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
                     if self.stop_flag:
                         break
-                    _process_audio_chunk(
+                    split_output = build_output_path(
+                        out_dir,
+                        sub_files,
+                        part_num=idx,
+                        split_total=split_total,
+                    )
+                    existed_before = os.path.exists(split_output)
+                    result = _process_audio_chunk(
                         text=sub_text,
                         out_dir=out_dir,
                         part_num=idx,
@@ -566,6 +674,16 @@ class GenerationMixin:
                         track_number=track_number,
                     )
                     track_number += 1
+                    if result == TTSResult.SUCCESS and not existed_before and os.path.exists(split_output):
+                        created_split_outputs.append(split_output)
+                    if result != TTSResult.SUCCESS:
+                        self._remove_incomplete_split_outputs(created_split_outputs)
+                        self.set_file_status(
+                            f,
+                            "已中断" if result == TTSResult.STOPPED else "失败：章节未完整生成",
+                            spinning=False,
+                        )
+                        break
             else:
                 _process_audio_chunk(
                     text=text,
@@ -642,11 +760,19 @@ class GenerationMixin:
 
                 sub_parts = self.split_long_text(text, target_duration, f)
                 split_total = len(sub_parts)
+                created_split_outputs = []
 
                 for sub_idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
                     if self.stop_flag:
                         break
-                    _process_audio_chunk(
+                    split_output = build_output_path(
+                        out_dir,
+                        sub_files,
+                        part_num=sub_idx,
+                        split_total=split_total,
+                    )
+                    existed_before = os.path.exists(split_output)
+                    result = _process_audio_chunk(
                         text=sub_text,
                         out_dir=out_dir,
                         part_num=sub_idx,
@@ -669,6 +795,16 @@ class GenerationMixin:
                         track_number=part_num,
                     )
                     part_num += 1
+                    if result == TTSResult.SUCCESS and not existed_before and os.path.exists(split_output):
+                        created_split_outputs.append(split_output)
+                    if result != TTSResult.SUCCESS:
+                        self._remove_incomplete_split_outputs(created_split_outputs)
+                        self.set_file_status(
+                            f,
+                            "已中断" if result == TTSResult.STOPPED else "失败：章节未完整生成",
+                            spinning=False,
+                        )
+                        break
                 continue
 
             self.set_file_status(f, "等待合并", spinning=False)

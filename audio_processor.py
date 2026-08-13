@@ -13,6 +13,8 @@ from typing import Dict, List, Tuple, Optional
 
 from pydub import AudioSegment
 
+from models import TTSResult
+
 from models import sanitize_filename
 
 
@@ -382,7 +384,7 @@ def _process_audio_chunk(
     if stop_flag_check():
         for name in file_list:
             set_file_status(name, "已中断", spinning=False)
-        return None
+        return TTSResult.STOPPED
 
     opath = build_output_path(out_dir, file_list, part_num, split_total=split_total)
 
@@ -395,7 +397,7 @@ def _process_audio_chunk(
                 set_file_status(name, f"已存在(跳过)（时长{dur}）", spinning=False)
             else:
                 set_file_status(name, "已存在(跳过)", spinning=False)
-        return opath
+        return TTSResult.SUCCESS
 
     paras = preprocess_text(text)
     total_paras = max(1, len(paras))
@@ -425,8 +427,21 @@ def _process_audio_chunk(
         for name in file_list[1:]:
             set_file_status(name, f"合并中（{j}/{total_paras}）", spinning=False)
 
-        success = tts_with_retry(p, tfile, iid_for_error=file_list[0], max_retries=3)
-        if not success:
+        tts_result = tts_with_retry(p, tfile, iid_for_error=file_list[0], max_retries=3)
+        if tts_result == TTSResult.STOPPED:
+            try:
+                os.remove(tfile)
+            except Exception:
+                pass
+            ok = False
+            for name in file_list:
+                set_file_status(name, "已中断", spinning=False)
+            break
+        if tts_result != TTSResult.SUCCESS:
+            try:
+                os.remove(tfile)
+            except Exception:
+                pass
             ok = False
             set_file_status(leader, f"合成失败 {bn}", spinning=False)
             for name in file_list[1:]:
@@ -501,7 +516,7 @@ def _process_audio_chunk(
                 set_file_progress(name, 100.0)
                 set_file_status(name, completed_status, spinning=False)
 
-            return opath
+            return TTSResult.SUCCESS
 
         except Exception as e:
             set_error(file_list[0], e)
@@ -513,11 +528,11 @@ def _process_audio_chunk(
                         os.remove(tf)
                     except Exception:
                         pass
-            return None
+            return TTSResult.FAILED
 
     for tf in tempfiles:
         try:
             os.remove(tf)
         except Exception:
             pass
-    return None
+    return TTSResult.STOPPED if stop_flag_check() else TTSResult.FAILED

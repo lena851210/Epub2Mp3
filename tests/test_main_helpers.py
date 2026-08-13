@@ -45,6 +45,51 @@ class MainHelperTests(unittest.TestCase):
         self.assertIn("自动重试 3 次", message)
         self.assertIn("刷新列表", message)
 
+    @patch("main.messagebox.askyesno", return_value=False)
+    def test_running_close_can_be_cancelled(self, ask_mock):
+        app = AudiobookGenerator.__new__(AudiobookGenerator)
+        app.is_generating = True
+        app.exit_after_stop = False
+        app.stop_generation = Mock()
+        app.set_status = Mock()
+        app._close_app = Mock()
+
+        app.on_closing()
+
+        ask_mock.assert_called_once()
+        app.stop_generation.assert_not_called()
+        app._close_app.assert_not_called()
+
+    @patch("main.messagebox.askyesno", return_value=True)
+    def test_running_close_requests_safe_stop(self, ask_mock):
+        app = AudiobookGenerator.__new__(AudiobookGenerator)
+        app.is_generating = True
+        app.exit_after_stop = False
+        app.stop_generation = Mock()
+        app.set_status = Mock()
+        app._close_app = Mock()
+
+        app.on_closing()
+
+        ask_mock.assert_called_once()
+        self.assertTrue(app.exit_after_stop)
+        app.stop_generation.assert_called_once()
+        app._close_app.assert_not_called()
+
+    @patch("main.messagebox.askyesno")
+    def test_repeated_close_waits_for_safe_cleanup(self, ask_mock):
+        app = AudiobookGenerator.__new__(AudiobookGenerator)
+        app.is_generating = True
+        app.exit_after_stop = True
+        app.set_status = Mock()
+        app._close_app = Mock()
+
+        app.on_closing()
+
+        ask_mock.assert_not_called()
+        app.set_status.assert_called_once()
+        app._close_app.assert_not_called()
+
     def test_source_epub_directory_prefers_matching_epub(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

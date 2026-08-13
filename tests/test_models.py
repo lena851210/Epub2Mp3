@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,8 @@ from models import (
     DEFAULT_VOLUME,
     DEFAULT_WORDS_PER_MINUTE,
     EdgeTTSWrapper,
+    TTSRequestStopped,
+    TTSRequestTimeout,
     VOICE_MAPPING,
     clean_text_from_html_bytes,
 )
@@ -51,6 +54,51 @@ class EdgeTTSWrapperTests(unittest.TestCase):
 
         self.assertEqual(wrapper._resolve_voice_code("晓晓(女)"), voice_code)
         self.assertEqual(wrapper._resolve_voice_code(voice_code), voice_code)
+
+    @patch("models.edge_tts.Communicate")
+    def test_segment_total_timeout_cancels_request(self, communicate_mock):
+        async def never_finishes(_output_file):
+            import asyncio
+            await asyncio.sleep(10)
+
+        communicate_mock.return_value.save.side_effect = never_finishes
+        wrapper = EdgeTTSWrapper()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(TTSRequestTimeout):
+                wrapper.text_to_speech(
+                    "超时测试",
+                    "晓晓(女)",
+                    1.0,
+                    0,
+                    0,
+                    os.path.join(temp_dir, "timeout.mp3"),
+                    total_timeout=0.02,
+                )
+
+    @patch("models.edge_tts.Communicate")
+    def test_segment_request_can_be_stopped(self, communicate_mock):
+        async def never_finishes(_output_file):
+            import asyncio
+            await asyncio.sleep(10)
+
+        communicate_mock.return_value.save.side_effect = never_finishes
+        cancel_event = threading.Event()
+        cancel_event.set()
+        wrapper = EdgeTTSWrapper()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(TTSRequestStopped):
+                wrapper.text_to_speech(
+                    "停止测试",
+                    "晓晓(女)",
+                    1.0,
+                    0,
+                    0,
+                    os.path.join(temp_dir, "stopped.mp3"),
+                    total_timeout=5,
+                    cancel_event=cancel_event,
+                )
 
     @patch("models.edge_tts.Communicate", FakeCommunicate)
     def test_text_to_speech_requests_synthesis_once(self):

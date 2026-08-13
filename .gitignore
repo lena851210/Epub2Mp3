@@ -42,4 +42,5 @@ temp/
 
 # ===== User-specific config =====
 config.json
+tts_runtime.log
 archive/local-config-snapshot.json
