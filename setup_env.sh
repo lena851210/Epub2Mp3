@@ -13,7 +13,9 @@ echo "=== EPUB2MP3 环境初始化脚本（macOS） ==="
 # - Python 3.13+ 移除了标准库 audioop，而 pydub 依赖它，容易报错；
 # - Homebrew 的 Python 有时不包含 _tkinter（GUI 会启动失败）。
 # 因此优先选择已安装的 python3.12（兼容性最好），其次才用 python3。
-if [ -x "/opt/homebrew/bin/python3.12" ]; then
+if [ -x "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12" ]; then
+  PYTHON_BIN="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
+elif [ -x "/opt/homebrew/bin/python3.12" ]; then
   PYTHON_BIN="/opt/homebrew/bin/python3.12"
 elif command -v python3 >/dev/null 2>&1; then
   PYTHON_BIN="python3"
@@ -48,11 +50,11 @@ fi
 
 # 4. 升级 pip
 echo "正在升级 pip ..."
-pip install --upgrade pip
+python -m pip install --upgrade pip
 
 # 5. 安装 Python 依赖
-echo "正在安装项目依赖（ebooklib, beautifulsoup4, lxml, pydub, edge-tts）..."
-pip install "ebooklib" "beautifulsoup4" "lxml" "pydub" "edge-tts"
+echo "正在根据 requirements.txt 安装项目依赖..."
+python -m pip install -r "${PROJECT_DIR}/requirements.txt"
 
 echo "依赖安装完成。"
 
@@ -100,10 +102,8 @@ fi
 
 echo
 echo "=== 环境准备完成 ==="
-echo "接下来可以使用："
-echo "  cd \"$PROJECT_DIR\""
-echo "  source .venv/bin/activate"
-echo "  python app.py"
+echo "现在可以双击“启动 EPUB to MP3.command”打开应用。"
+echo "也可以在终端中使用："
+echo "  \"$VENV_DIR/bin/python\" \"$PROJECT_DIR/app.py\""
 echo
 echo "如果在运行 app.py 时仍看到 tkinter 报错，请把完整错误信息发给我，我帮你继续排查。"
-

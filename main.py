@@ -4,17 +4,15 @@
 """
 
 import os
-import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import subprocess
-import threading
-import time
 import tempfile
 import platform
 import shutil
-from typing import List, Tuple, Optional
-from concurrent.futures import ThreadPoolExecutor
+import time
+import threading
+from typing import Optional
 
 from pydub import AudioSegment
 
@@ -24,46 +22,76 @@ from models import (
     EdgeTTSWrapper,
     VOICE_MAPPING,
     BASE_WORDS_PER_MINUTE,
-    sanitize_filename
+    DEFAULT_PITCH,
+    DEFAULT_SPEED,
+    DEFAULT_VOICE_NAME,
+    DEFAULT_VOLUME,
+    DEFAULT_WORDS_PER_MINUTE,
 )
 from epub_processor import convert_epub_to_txt
-from audio_processor import _process_audio_chunk, preprocess_text
+from generation_manager import GenerationMixin
+from file_manager import FileManagerMixin, display_task_progress, display_task_status
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
 
 
-# ====== 【Class】主应用类 ======
-class AudiobookGenerator:
+class AudiobookGenerator(FileManagerMixin, GenerationMixin):
     """有声书生成工具 - 主应用类"""
-    
+
+    @staticmethod
+    def _create_root_window():
+        """创建主窗口；拖放扩展异常时保证 App 仍能启动。"""
+        if TkinterDnD is not None:
+            try:
+                return TkinterDnD.Tk(), True
+            except Exception as e:
+                print(f"文件拖放暂不可用，已回退到普通窗口: {e}")
+        return tk.Tk(), False
+
     def __init__(self):
         self.config_mgr = ConfigManager(self._get_config_path())
         self.edge = EdgeTTSWrapper()
         self.duration_estimator = DurationEstimator(BASE_WORDS_PER_MINUTE)
-        
-        self.root = tk.Tk()
-        self.root.title("有声书生成工具 (Edge TTS) - 优化版 v3.0")
+
+        self.root, self.drag_and_drop_available = self._create_root_window()
+        self.root.title("EPUB to MP3 - V2.0")
         self.root.geometry("960x680")
         self.root.minsize(720, 560)
         self.stop_flag = False
+        self.tts_cancel_event = threading.Event()
+        self.is_generating = False
+        self.generation_thread = None
+        self.exit_after_stop = False
+        self.is_previewing = False
+        self.is_importing_epub = False
+        self.task_files = []
+        self.task_statuses = {}
+        self.task_progress = {}
+        self.task_started_at = None
+        self.elapsed_timer_job = None
+        self.last_elapsed_seconds = 0
 
         # UI 状态管理
         self.selection_states = {}
-        self.selection_vars = {}
-        self.tree_checks = {}
-        self.progress_vars = {}
-        self.tree_progress = {}
         self.file_chars = {}
         self.error_detail = {}
-        
+
         # 动画效果
-        self.spinner_frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+        self.spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self.spinner_active = {}
         self.spinner_job = None
-        self._resize_job = None
-        
-        # 线程池
-        self.tts_executor = ThreadPoolExecutor(max_workers=2)
+
+        # 目录监测
+        self.dir_watch_job = None
+        self.last_dir_snapshot = None
 
         self.create_ui()
+        self._setup_epub_drop()
+        self._start_dir_watch()
 
     def _get_config_path(self) -> str:
         """获取配置文件路径"""
@@ -83,175 +111,442 @@ class AudiobookGenerator:
         except Exception:
             pass
 
-        BASE_FONT = ("Helvetica" if sysname == "Darwin" else "Segoe UI", 11)
-        style.configure(".", font=BASE_FONT)
-        style.configure("Treeview.Heading", font=(BASE_FONT[0], BASE_FONT[1], "bold"))
-        style.configure("Treeview", rowheight=28)
+        base_font = ("Helvetica" if sysname == "Darwin" else "Segoe UI", 11)
+        style.configure(".", font=base_font)
+        style.configure("Treeview.Heading", font=(base_font[0], base_font[1], "bold"))
+        style.configure("Treeview", rowheight=28, indent=0)
+        button_padding = (10, 7, 10, 5) if sysname == "Darwin" else (10, 6)
+        primary_padding = (12, 8, 12, 6) if sysname == "Darwin" else (12, 7)
+        style.configure("App.TButton", font=base_font, padding=button_padding, anchor="center")
+        style.configure(
+            "Primary.TButton",
+            font=(base_font[0], base_font[1], "bold"),
+            padding=primary_padding,
+            anchor="center",
+        )
+        style.configure(
+            "ImportPrimary.TButton",
+            font=(base_font[0], base_font[1], "bold"),
+            padding=primary_padding,
+            anchor="center",
+            foreground="white",
+            background="#1677FF",
+        )
+        style.map(
+            "ImportPrimary.TButton",
+            foreground=[("disabled", "#E6E6E6"), ("!disabled", "white")],
+            background=[("pressed", "#0958D9"), ("active", "#4096FF"), ("!disabled", "#1677FF")],
+        )
+        style.configure(
+            "Accent.TButton",
+            font=(base_font[0], base_font[1], "bold"),
+            padding=primary_padding,
+            anchor="center",
+        )
+        # 去掉原生 Toolbutton 的白色方框，只保留克制的重置图标。
+        style.layout(
+            "ResetIcon.TButton",
+            [("Button.padding", {"sticky": "nswe", "children": [("Button.label", {"sticky": "nswe"})]})],
+        )
+        style.configure(
+            "ResetIcon.TButton",
+            font=(base_font[0], 13, "normal"),
+            foreground="#6E6E73",
+            padding=(4, 1),
+            anchor="center",
+        )
+        style.map(
+            "ResetIcon.TButton",
+            foreground=[("disabled", "#B8B8B8"), ("pressed", "#0958D9"), ("active", "#1677FF")],
+        )
 
         main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
         main.grid(row=0, column=0, sticky="nsew")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        main.rowconfigure(2, weight=1)
+
         main.columnconfigure(0, weight=1)
+        main.rowconfigure(0, weight=3)
+        main.rowconfigure(1, weight=0)
+        main.rowconfigure(2, weight=0)
+        main.rowconfigure(3, weight=0)
+        main.rowconfigure(4, weight=0)
 
-        # ===== 语音设置 =====
-        voice_lf = ttk.LabelFrame(main, text="语音设置", padding=(10, 8))
-        voice_lf.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
-        voice_lf.columnconfigure(1, weight=1)
-
-        ttk.Label(voice_lf, text="音色:").grid(row=0, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
-        current_voice = next((d for d, e in VOICE_MAPPING.items() if e == self.config_mgr.get("edge", {}).get("voice_name")), "晓晓(女)")
-        self.voice_var = tk.StringVar(value=current_voice)
-        self.voice_combo = ttk.Combobox(voice_lf, textvariable=self.voice_var, values=self.edge.voices, state="readonly")
-        self.voice_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 6))
-        ttk.Button(voice_lf, text="刷新列表", command=self.refresh_voices, width=10).grid(row=0, column=2, padx=(0, 6), pady=(0, 6), sticky="e")
-        ttk.Button(voice_lf, text="试听", command=self.preview_audio, width=8).grid(row=0, column=3, padx=(0, 0), pady=(0, 6), sticky="e")
-
-        sliders = ttk.Frame(voice_lf)
-        sliders.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 0))
-        
-        # ===== 语音设置 =====
-        # 显示“实际使用的 voice code”，便于确认 UI 选择是否生效
-
-        self.voice_code_var = tk.StringVar()
-
-        def _update_voice_code(*args):
-            code = VOICE_MAPPING.get(self.voice_var.get(), str(self.voice_var.get()))
-            self.voice_code_var.set(f"实际合成音色代码: {code}")
-
-        self.voice_var.trace_add("write", _update_voice_code)
-        _update_voice_code()
-
-        ttk.Label(voice_lf, textvariable=self.voice_code_var, foreground="#666").grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=(6, 0)
-        )
-        for i in range(3):
-            sliders.columnconfigure(i, weight=1)
-
-        def make_slider(parent, label_text, var, from_, to, fmt):
-            frame = ttk.Frame(parent)
-            label_var = tk.StringVar(value=f"{label_text}: {fmt.format(var.get())}")
-            ttk.Label(frame, textvariable=label_var, anchor="w").pack(fill="x")
-            scale = ttk.Scale(frame, from_=from_, to=to, variable=var, orient="horizontal")
-            scale.pack(fill="x")
-            var.trace_add("write", lambda *args: label_var.set(f"{label_text}: {fmt.format(var.get())}"))
-            return frame
-
-        self.speed_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("speed", 1.0))
-        speed_frame = make_slider(sliders, "语速", self.speed_var, 0.5, 2.0, "{:.2f}x")
-        speed_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-
-        self.pitch_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("pitch", 0))
-        make_slider(sliders, "音调", self.pitch_var, -50, 50, "{:+.0f}Hz").grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        self.volume_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("volume", 0))
-        make_slider(sliders, "音量", self.volume_var, -100, 100, "{:+.0f}%").grid(row=0, column=2, sticky="ew")
-
-        def update_wpm(*args):
-            estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * self.speed_var.get()))
-            self.wpm_var.set(estimated_wpm)
-            self.wpm_label_var.set(f"估算字数: {estimated_wpm} 字/分钟")
-            self.update_all_estimates()
-        
-        self.wpm_var = tk.IntVar(value=self.config_mgr.get("words_per_minute", BASE_WORDS_PER_MINUTE))
-        self.wpm_label_var = tk.StringVar(value=f"估算字数: {self.wpm_var.get()} 字/分钟")
-        self.speed_var.trace_add("write", update_wpm)
-
-        # ===== 输出设置 =====
-        out_lf = ttk.LabelFrame(main, text="输出设置", padding=(10, 8))
-        out_lf.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
-        out_lf.columnconfigure(1, weight=1)
-
-        self.merge_var = tk.BooleanVar(value=self.config_mgr.get("merge_audio", True))
-        merge_row = ttk.Frame(out_lf)
-        merge_row.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
-        ttk.Checkbutton(merge_row, text="合并音频为长段落", variable=self.merge_var, command=self.toggle_merge_options).pack(side="left")
-        ttk.Label(merge_row, text="目标时长(分钟):").pack(side="left", padx=(10, 6))
-        self.target_duration_var = tk.IntVar(value=self.config_mgr.get("target_duration", 40))
-        self.target_duration_spin = ttk.Spinbox(merge_row, from_=10, to=120, width=6, textvariable=self.target_duration_var)
-        self.target_duration_spin.pack(side="left", padx=(0, 12))
-        ttk.Label(merge_row, textvariable=self.wpm_label_var).pack(side="left")
-
-        dir_row = ttk.Frame(out_lf)
-        dir_row.grid(row=1, column=0, columnspan=4, sticky="ew")
-        dir_row.columnconfigure(1, weight=1)
-        ttk.Label(dir_row, text="TXT目录:").grid(row=0, column=0, padx=(0, 8), sticky="w")
-        self.txt_dir = tk.StringVar(value=self.config_mgr.get("last_txt_dir", ""))
-        ttk.Entry(dir_row, textvariable=self.txt_dir).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        ttk.Button(dir_row, text="浏览...", command=self.select_input_dir, width=8).grid(row=0, column=2, sticky="e")
-
-        # ===== 源文件列表 =====
-        files_lf = ttk.LabelFrame(main, text="源文件", padding=(10, 8))
-        files_lf.grid(row=2, column=0, sticky="nsew", padx=0, pady=(0, 8))
+        # =========================
+        # Step 1：文本准备
+        # =========================
+        files_lf = ttk.LabelFrame(main, text="Step 1：文本准备（导入 EPUB / 查看 TXT）", padding=(10, 8))
+        files_lf.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
         files_lf.columnconfigure(0, weight=1)
         files_lf.rowconfigure(2, weight=1)
 
         topbar = ttk.Frame(files_lf)
         topbar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        topbar.columnconfigure(0, weight=1)
-        left_group = ttk.Frame(topbar)
-        left_group.grid(row=0, column=0, sticky="w")
-        ttk.Label(left_group, text="TXT列表（双击名称可预览）").pack(side="left", padx=(0, 6))
-        ttk.Button(left_group, text="【全选】", command=self.select_all_files, style="Toolbutton").pack(side="left", padx=(0, 4))
-        ttk.Button(left_group, text="【全不选】", command=self.unselect_all_files, style="Toolbutton").pack(side="left", padx=(0, 4))
-        ttk.Button(left_group, text="【反选】", command=self.invert_selection, style="Toolbutton").pack(side="left", padx=(0, 4))
-        self.files_info_var = tk.StringVar(value="当前目录未加载")
-        ttk.Label(topbar, textvariable=self.files_info_var, foreground="#666").grid(row=0, column=1, sticky="e")
+        topbar.columnconfigure(0, weight=0)
+        topbar.columnconfigure(1, weight=1)
+        topbar.columnconfigure(2, weight=0)
 
-        # 表格配置
-        columns = ("select", "name", "size", "chars", "est", "status", "progress")
-        self.files_tree = ttk.Treeview(files_lf, columns=columns, show="headings")
-        self.files_tree.heading("select", text="选择")
-        self.files_tree.heading("name", text="TXT名称")
+        left_info = ttk.Frame(topbar)
+        left_info.grid(row=0, column=0, sticky="w")
+        ttk.Label(left_info, text="TXT列表（双击名称可预览）").pack(side="left", padx=(0, 12))
+
+        mid_actions = ttk.Frame(topbar)
+        mid_actions.grid(row=0, column=1, sticky="w")
+
+        ttk.Button(mid_actions, text="【全选】", command=self.select_all_files, style="Toolbutton", width=8).pack(side="left", padx=(0, 6))
+        ttk.Button(mid_actions, text="【全不选】", command=self.unselect_all_files, style="Toolbutton", width=8).pack(side="left", padx=(0, 6))
+        ttk.Button(mid_actions, text="【反选】", command=self.invert_selection, style="Toolbutton", width=8).pack(side="left", padx=(0, 10))
+
+        self.files_info_var = tk.StringVar(value="当前目录未加载")
+        ttk.Label(mid_actions, textvariable=self.files_info_var, foreground="#666").pack(side="left")
+
+        right_main_action = ttk.Frame(topbar)
+        right_main_action.grid(row=0, column=2, sticky="e")
+
+        self.import_epub_btn = ttk.Button(
+            right_main_action,
+            text="📘 导入 EPUB",
+            command=self.import_epub,
+            width=20,
+            style=("Accent.TButton" if sysname == "Darwin" else "ImportPrimary.TButton")
+        )
+        self.import_epub_btn.pack(side="right")
+
+        columns = ("name", "est", "size", "chars", "status", "progress")
+        self.files_tree = ttk.Treeview(files_lf, columns=columns, show="tree headings")
+        self.checkbox_unchecked_image = tk.PhotoImage(
+            master=self.root,
+            file=os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "checkbox_unchecked.png"),
+        )
+        self.checkbox_checked_image = tk.PhotoImage(
+            master=self.root,
+            file=os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "checkbox_checked.png"),
+        )
+        self.files_tree.heading("#0", text="选择", anchor="center")
+        self.files_tree.heading("name", text="章节")
+        self.files_tree.heading("est", text="预估时长")
         self.files_tree.heading("size", text="大小(KB)")
         self.files_tree.heading("chars", text="字数")
-        self.files_tree.heading("est", text="预估时长")
         self.files_tree.heading("status", text="状态")
         self.files_tree.heading("progress", text="进度")
 
-        self.files_tree.column("select", width=48, minwidth=36, anchor="center", stretch=False)
-        self.files_tree.column("name", width=420, minwidth=200, anchor="w", stretch=True)
-        self.files_tree.column("size", width=90, minwidth=72, anchor="e", stretch=False)
-        self.files_tree.column("chars", width=90, minwidth=72, anchor="e", stretch=False)
-        self.files_tree.column("est", width=100, minwidth=80, anchor="center", stretch=False)
-        self.files_tree.column("status", width=220, minwidth=160, anchor="w", stretch=True)
-        self.files_tree.column("progress", width=180, minwidth=120, anchor="center", stretch=True)
+        self.files_tree.column("#0", width=52, minwidth=44, anchor="center", stretch=False)
+        self.files_tree.column("name", width=330, minwidth=250, anchor="w", stretch=True)
+        self.files_tree.column("est", width=90, minwidth=82, anchor="center", stretch=False)
+        self.files_tree.column("size", width=80, minwidth=78, anchor="center", stretch=False)
+        self.files_tree.column("chars", width=80, minwidth=78, anchor="center", stretch=False)
+        self.files_tree.column("status", width=145, minwidth=140, anchor="center", stretch=False)
+        self.files_tree.column("progress", width=95, minwidth=90, anchor="center", stretch=False)
 
         vsb = ttk.Scrollbar(files_lf, orient="vertical", command=self.files_tree.yview)
         hsb = ttk.Scrollbar(files_lf, orient="horizontal", command=self.files_tree.xview)
-        self.files_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        def update_horizontal_scrollbar(first, last):
+            """内容完整可见时隐藏横向滚动条，窗口过窄时再自动出现。"""
+            hsb.set(first, last)
+            if float(first) <= 0.0 and float(last) >= 1.0:
+                hsb.grid_remove()
+            else:
+                hsb.grid()
+
+        self.files_tree.configure(
+            yscrollcommand=vsb.set,
+            xscrollcommand=update_horizontal_scrollbar,
+        )
         self.files_tree.grid(row=2, column=0, sticky="nsew")
         vsb.grid(row=2, column=1, sticky="ns")
         hsb.grid(row=3, column=0, sticky="ew")
+        self.root.after_idle(
+            lambda: update_horizontal_scrollbar(*self.files_tree.xview())
+        )
 
-        self.files_tree.bind("<Configure>", lambda e: self._on_tree_configure())
         self.files_tree.bind("<Double-1>", self.on_tree_double_click)
         self.files_tree.bind("<Button-1>", self._on_tree_click)
 
-        # 底部按钮
-        button_row = ttk.Frame(main)
-        button_row.grid(row=3, column=0, sticky="ew", pady=(0, 6))
-        button_row.columnconfigure(1, weight=1)
-        left_btns = ttk.Frame(button_row)
-        left_btns.grid(row=0, column=0, sticky="w")
-        ttk.Button(left_btns, text="停止", command=self.stop_generation, width=10).pack(side="left")
-        right_btns = ttk.Frame(button_row)
-        right_btns.grid(row=0, column=2, sticky="e")
-        ttk.Button(right_btns, text="导入 EPUB→TXT", command=self.import_epub, width=16).pack(side="left", padx=(0, 8))
-        ttk.Button(right_btns, text="打开音频目录 📁", command=self.open_output_dir, width=16).pack(side="left", padx=(0, 8))
-        ttk.Button(right_btns, text="开始转换 🚀", command=self.start_generation, width=16).pack(side="left")
+        # =========================
+        # Step 2：语音设置
+        # =========================
+        voice_lf = ttk.LabelFrame(main, text="Step 2：语音设置", padding=(10, 8))
+        voice_lf.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        voice_lf.columnconfigure(1, weight=1)
 
-        # 状态栏
+        ttk.Label(voice_lf, text="音色:").grid(row=0, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
+
+        configured_voice = self.config_mgr.get("edge", {}).get("voice_name", DEFAULT_VOICE_NAME)
+        default_voice_label = next(
+            (label for label, code in VOICE_MAPPING.items() if code == DEFAULT_VOICE_NAME),
+            "云健(男)",
+        )
+        current_voice = next(
+            (label for label, code in VOICE_MAPPING.items() if code == configured_voice),
+            default_voice_label,
+        )
+        if self.edge.voices and current_voice not in self.edge.voices:
+            current_voice = self.edge.voices[0]
+
+        self.voice_var = tk.StringVar(value=current_voice)
+        self.voice_combo = ttk.Combobox(
+            voice_lf,
+            textvariable=self.voice_var,
+            values=self.edge.voices,
+            state="readonly"
+        )
+        self.voice_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 6))
+
+        ttk.Button(
+            voice_lf,
+            text="刷新列表",
+            command=self.refresh_voices,
+            width=10,
+            style="App.TButton",
+        ).grid(row=0, column=2, padx=(0, 6), pady=(0, 6), sticky="e")
+        self.preview_btn = ttk.Button(
+            voice_lf,
+            text="试听",
+            command=self.preview_audio,
+            width=8,
+            style="App.TButton",
+        )
+        self.preview_btn.grid(row=0, column=3, pady=(0, 6), sticky="e")
+
+        sliders = ttk.Frame(voice_lf)
+        sliders.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        for i in range(3):
+            sliders.columnconfigure(i, weight=1)
+
+        def make_slider(
+            parent,
+            label_text,
+            var,
+            from_,
+            to,
+            value_text_func,
+            reset_value,
+        ):
+            frame = ttk.Frame(parent)
+
+            def build_label():
+                return value_text_func(var.get())
+
+            label_var = tk.StringVar(value=build_label())
+            label_row = ttk.Frame(frame)
+            label_row.pack(fill="x", pady=(0, 2))
+            ttk.Label(label_row, text=f"{label_text}:").pack(side="left")
+            ttk.Label(label_row, textvariable=label_var, anchor="w").pack(side="left", padx=(6, 0))
+            ttk.Button(
+                label_row,
+                text="↺",
+                command=lambda: var.set(reset_value),
+                width=1,
+                cursor="pointinghand",
+                style="ResetIcon.TButton",
+            ).pack(side="left", padx=(5, 0))
+            scale = ttk.Scale(frame, from_=from_, to=to, variable=var, orient="horizontal")
+            scale.pack(fill="x")
+
+            def refresh_label(*args):
+                label_var.set(build_label())
+
+            var.trace_add("write", refresh_label)
+            return frame
+
+        def speed_text(value):
+            if value < 0.75:
+                description = "慢"
+            elif value <= 1.15:
+                description = "适中"
+            else:
+                description = "快"
+            estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * value))
+            return f"{description} · {value:.1f}x（约 {estimated_wpm} 字/分）"
+
+        def pitch_text(value):
+            if value < -5:
+                description = "低沉"
+            elif value > 5:
+                description = "明亮"
+            else:
+                description = "自然"
+            return f"{description} {value:+.0f}Hz"
+
+        def volume_text(value):
+            return f"{value:+.0f}%"
+
+        self.speed_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("speed", DEFAULT_SPEED))
+        speed_frame = make_slider(
+            sliders,
+            "语速",
+            self.speed_var,
+            0.5,
+            2.0,
+            speed_text,
+            DEFAULT_SPEED,
+        )
+        speed_frame.grid(row=0, column=0, sticky="ew", padx=(0, 24))
+
+        self.pitch_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("pitch", DEFAULT_PITCH))
+        make_slider(sliders, "音调", self.pitch_var, -50, 50, pitch_text, DEFAULT_PITCH).grid(
+            row=0, column=1, sticky="ew", padx=(0, 24)
+        )
+
+        self.volume_var = tk.DoubleVar(value=self.config_mgr.get("edge", {}).get("volume", DEFAULT_VOLUME))
+        make_slider(sliders, "音量", self.volume_var, -100, 100, volume_text, DEFAULT_VOLUME).grid(
+            row=0, column=2, sticky="ew"
+        )
+
+        def update_wpm(*args):
+            estimated_wpm = max(1, int(BASE_WORDS_PER_MINUTE * self.speed_var.get()))
+            self.wpm_var.set(estimated_wpm)
+            self.update_all_estimates()
+
+        self.wpm_var = tk.IntVar(value=self.config_mgr.get("words_per_minute", DEFAULT_WORDS_PER_MINUTE))
+        self.speed_var.trace_add("write", update_wpm)
+
+        # =========================
+        # Step 3：输出设置
+        # =========================
+        out_lf = ttk.LabelFrame(main, text="Step 3：输出设置", padding=(10, 8))
+        out_lf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        out_lf.columnconfigure(1, weight=1)
+
+        self.merge_var = tk.BooleanVar(value=self.config_mgr.get("merge_audio", False))
+
+        merge_row = ttk.Frame(out_lf)
+        merge_row.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
+
+        self.merge_check = ttk.Checkbutton(
+            merge_row,
+            text="按目标时长组织 MP3",
+            variable=self.merge_var,
+            command=self.toggle_merge_options
+        )
+        self.merge_check.pack(side="left")
+        ttk.Label(
+            merge_row,
+            text="（短章节合并，超长章节拆分）",
+            foreground="#666"
+        ).pack(side="left", padx=(6, 0))
+
+        self.target_row = ttk.Frame(merge_row)
+        ttk.Label(self.target_row, text="目标时长(分钟):").pack(side="left", padx=(12, 6))
+
+        self.target_duration_var = tk.IntVar(value=self.config_mgr.get("target_duration", 30))
+        self.target_duration_spin = ttk.Spinbox(
+            self.target_row,
+            from_=10,
+            to=120,
+            width=6,
+            textvariable=self.target_duration_var
+        )
+        self.target_duration_spin.pack(side="left")
+
+        dir_row = ttk.Frame(out_lf)
+        dir_row.grid(row=1, column=0, columnspan=4, sticky="ew")
+        dir_row.columnconfigure(1, weight=1)
+
+        ttk.Label(dir_row, text="TXT目录:").grid(row=0, column=0, padx=(0, 8), sticky="w")
+        self.txt_dir = tk.StringVar(value=self.config_mgr.get("last_txt_dir", ""))
+        ttk.Entry(dir_row, textvariable=self.txt_dir).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Button(
+            dir_row,
+            text="浏览...",
+            command=self.select_input_dir,
+            width=8,
+            style="App.TButton",
+        ).grid(row=0, column=2, sticky="e")
+
+        # 初始化 Step 3 显示
+        self.toggle_merge_options(initial=True)
+
+        # =========================
+        # 底部操作栏
+        # =========================
+        action_bar = ttk.Frame(main)
+        action_bar.grid(row=3, column=0, sticky="ew", pady=(4, 8))
+        action_bar.columnconfigure(0, weight=1)
+        action_bar.columnconfigure(1, weight=1)
+
+        left_btns = ttk.Frame(action_bar)
+        left_btns.grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            left_btns,
+            text="📁 打开音频目录",
+            command=self.open_output_dir,
+            width=16,
+            style="App.TButton",
+        ).pack(side="left")
+
+        right_btns = ttk.Frame(action_bar)
+        right_btns.grid(row=0, column=1, sticky="e")
+        self.stop_btn = ttk.Button(
+            right_btns,
+            text="停止",
+            command=self.stop_generation,
+            width=10,
+            state="disabled",
+            style="App.TButton",
+        )
+        self.stop_btn.pack(side="left", padx=(0, 10))
+
+        self.start_btn = ttk.Button(
+            right_btns,
+            text="🚀 开始转换",
+            command=self.start_generation,
+            width=18,
+            style="Primary.TButton"
+        )
+        self.start_btn.pack(side="left")
+
+        self.root.bind("<Return>", lambda e: self.start_generation() if str(self.start_btn.cget("state")) != "disabled" else None)
+
         status_bar = ttk.Frame(main)
         status_bar.grid(row=4, column=0, sticky="ew")
+        status_bar.columnconfigure(0, weight=1)
+
+        status_text_row = ttk.Frame(status_bar)
+        status_text_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        status_text_row.columnconfigure(0, weight=1)
+
         self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(status_bar, textvariable=self.status_var, anchor="w").pack(fill="x")
+        ttk.Label(
+            status_text_row,
+            textvariable=self.status_var,
+            anchor="w"
+        ).grid(row=0, column=0, sticky="ew")
+
+        self.overall_progress_text_var = tk.StringVar(value="整体进度：未开始")
+        ttk.Label(
+            status_text_row,
+            textvariable=self.overall_progress_text_var,
+            anchor="e"
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        self.elapsed_time_var = tk.StringVar(value="总耗时：00:00:00")
+        ttk.Label(
+            status_text_row,
+            textvariable=self.elapsed_time_var,
+            anchor="e",
+            foreground="#666",
+        ).grid(row=0, column=2, sticky="e", padx=(12, 0))
+
+        self.overall_progress_var = tk.DoubleVar(value=0.0)
+        self.overall_progress_bar = ttk.Progressbar(
+            status_bar,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100.0,
+            variable=self.overall_progress_var
+        )
+        self.overall_progress_bar.grid(row=1, column=0, sticky="ew")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
         if self.txt_dir.get() and os.path.isdir(self.txt_dir.get()):
             self.load_file_list(self.txt_dir.get())
+
         self._warn_if_no_ffmpeg()
         self.update_all_estimates()
+        self.update_action_buttons_state()
 
     # ====== 工具方法 ======
 
@@ -264,13 +559,22 @@ class AudiobookGenerator:
         if not self._has_ffmpeg():
             self.set_status("未检测到 ffmpeg，合并/导出可能失败。macOS 可执行: brew install ffmpeg")
 
+    def _set_primary_button_state(self, btn, enabled: bool):
+        """设置主按钮启用/禁用状态"""
+        try:
+            btn.configure(state=("normal" if enabled else "disabled"))
+        except Exception:
+            pass
+
     def set_status(self, text: str):
         """设置状态栏文本"""
         self.root.after(0, lambda: self.status_var.set(text))
 
-    def _on_tree_configure(self):
-        """表格配置改变时刷新"""
-        self.refresh_tree_overlays()
+    def estimate_duration_str(self, chars: int) -> str:
+        """估算时长字符串"""
+        wpm = max(1, self.wpm_var.get())
+        seconds = self.duration_estimator.estimate_seconds(chars, wpm)
+        return self.seconds_to_str(seconds)
 
     def seconds_to_str(self, total_seconds: int) -> str:
         """秒数转字符串"""
@@ -278,17 +582,10 @@ class AudiobookGenerator:
             m = total_seconds // 60
             s = total_seconds % 60
             return f"{m}:{s:02d}"
-        else:
-            h = total_seconds // 3600
-            m = (total_seconds % 3600) // 60
-            s = total_seconds % 60
-            return f"{h}:{m:02d}:{s:02d}"
-
-    def estimate_duration_str(self, chars: int) -> str:
-        """估算时长字符串"""
-        wpm = max(1, self.wpm_var.get())
-        seconds = self.duration_estimator.estimate_seconds(chars, wpm)
-        return self.seconds_to_str(seconds)
+        h = total_seconds // 3600
+        m = (total_seconds % 3600) // 60
+        s = total_seconds % 60
+        return f"{h}:{m:02d}:{s:02d}"
 
     def update_all_estimates(self):
         """更新所有文件的预估时长"""
@@ -314,18 +611,96 @@ class AudiobookGenerator:
         except Exception:
             return None
 
+    def get_audio_output_dir(self) -> str:
+        """
+        根据当前 TXT 目录，计算音频输出目录。
+        规则：
+        - 如果 TXT 目录名以 _txt 结尾，则同级生成 _Audio 目录
+        - 否则退化为在 TXT 目录同级生成 “原目录名_Audio”
+        """
+        txt_dir = self.txt_dir.get().strip()
+        if not txt_dir:
+            return ""
+
+        txt_dir = os.path.abspath(txt_dir)
+        parent_dir = os.path.dirname(txt_dir)
+        txt_basename = os.path.basename(txt_dir)
+
+        if txt_basename.endswith("_txt"):
+            audio_basename = txt_basename[:-4] + "_Audio"
+        else:
+            audio_basename = txt_basename + "_Audio"
+
+        return os.path.join(parent_dir, audio_basename)
+
+    @staticmethod
+    def resolve_source_epub_dir(txt_dir: str, last_epub_path: str) -> str:
+        """在 TXT 目录失效时，定位当前转换对象 EPUB 所在目录。
+
+        优先使用与当前 ``*_txt`` 目录对应的最后一本 EPUB；
+        旧版配置没有 EPUB 路径时，回退到 TXT 目录的上级目录。
+        """
+        normalized_txt_dir = os.path.abspath(txt_dir) if txt_dir else ""
+        normalized_epub = os.path.abspath(last_epub_path) if last_epub_path else ""
+
+        if normalized_epub and os.path.isfile(normalized_epub):
+            expected_txt_dir = os.path.splitext(normalized_epub)[0] + "_txt"
+            if not normalized_txt_dir or normalized_txt_dir == expected_txt_dir:
+                return os.path.dirname(normalized_epub)
+
+        if normalized_txt_dir:
+            parent_dir = os.path.dirname(normalized_txt_dir)
+            if os.path.isdir(parent_dir):
+                return parent_dir
+
+        return ""
+
+    @staticmethod
+    def _open_directory_path(directory: str):
+        """使用当前系统打开目录。"""
+        if platform.system() == "Darwin":
+            subprocess.run(["open", directory], check=False)
+        elif platform.system() == "Windows":
+            os.startfile(directory)
+        else:
+            subprocess.run(["xdg-open", directory], check=False)
+
     def refresh_voices(self):
         """刷新语音列表"""
         def task():
             self.set_status("正在刷新音色列表...")
             voices = self.edge.refresh_voices()
-            self.root.after(0, lambda: self.voice_combo.configure(values=voices))
-            self.set_status(f"音色列表已刷新，共 {len(voices)} 个")
+
+            def apply():
+                self.voice_combo.configure(values=voices)
+                if voices:
+                    current = self.voice_var.get()
+                    if current not in voices:
+                        self.voice_var.set(voices[0])
+                self.set_status(f"音色列表已刷新，共 {len(voices)} 个")
+
+            self.root.after(0, apply)
+
+        import threading
         threading.Thread(target=task, daemon=True).start()
 
-    def toggle_merge_options(self):
-        """目标时长同时用于：单文件分割 & 合并模式，所以不禁用"""
-        self.target_duration_spin.configure(state="normal")
+    def toggle_merge_options(self, initial: bool = False):
+        """控制目标时长设置的显示/隐藏"""
+        if self.merge_var.get():
+            if not self.target_row.winfo_ismapped():
+                self.target_row.pack(side="left")
+        else:
+            if self.target_row.winfo_ismapped():
+                self.target_row.pack_forget()
+
+        if not initial:
+            self.update_idletasks()
+
+    def update_idletasks(self):
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
 
     def select_input_dir(self):
         """选择输入目录"""
@@ -337,6 +712,8 @@ class AudiobookGenerator:
             self.config_mgr.set("last_txt_dir", p)
             self.set_status("已选择目录")
             self.load_file_list(p)
+            self.update_action_buttons_state()
+            self._refresh_dir_snapshot()
 
     def read_text_file(self, path: str) -> Optional[str]:
         """读取文本文件"""
@@ -346,203 +723,35 @@ class AudiobookGenerator:
         except Exception:
             return None
 
-    # ====== 文件列表管理 ======
-
-    def load_file_list(self, directory: str):
-        """加载 TXT 文件列表"""
-        for iid in self.files_tree.get_children():
-            self.files_tree.delete(iid)
-        
-        self.selection_states.clear()
-        self.selection_vars.clear()
-        self.tree_checks.clear()
-        self.file_chars.clear()
-
-        if not os.path.isdir(directory):
-            self.files_info_var.set("当前目录无效")
-            return
-
-        all_txt = [f for f in os.listdir(directory) if f.lower().endswith(".txt")]
-
-        def sort_key(fname: str):
-            stem = os.path.splitext(fname)[0].strip()
-            # 支持：
-            # 001 标题
-            # 001-1 标题
-            # 001-标题（也能尽量解析）
-            m = re.match(r"^\s*(\d{1,4})(?:-(\d{1,4}))?[\s_-]*(.*)$", stem)
-            if m:
-                chap = int(m.group(1))
-                part = int(m.group(2)) if m.group(2) else 0  # 不分段的 part=0，会排在最前
-                title = (m.group(3) or "").strip()
-                return (chap, part, title, fname)
-            return (10**9, 0, stem, fname)
-
-        files = sorted(all_txt, key=sort_key)
-        if not files:
-            self.files_info_var.set("该目录下没有 TXT 文件")
-            return
-
-        for idx, fname in enumerate(files):
-            full_path = os.path.join(directory, fname)
-            
-            try:
-                size_kb = os.path.getsize(full_path) / 1024.0
-                size_str = f"{size_kb:.1f}"
-            except Exception:
-                size_str = "-"
-
-            text = self.read_text_file(full_path)
-            if text is None:
-                chars = 0
-            else:
-                chars = self.duration_estimator.count_chars(text)
-
-            self.file_chars[fname] = chars
-            est_str = self.estimate_duration_str(chars)
-
-            iid = fname
-            self.selection_states[iid] = True
-            self.progress_vars[iid] = tk.DoubleVar(value=0.0)
-            
-            # 第一列显示 ✓ 或空白
-            check_mark = "✓" if self.selection_states[iid] else ""
-            
-            tag = "oddrow" if idx % 2 else "evenrow"
-            self.files_tree.insert(
-                "", "end", iid=iid,
-                values=(check_mark, fname, size_str, str(chars), est_str, "待处理", ""),
-                tags=(tag,)
-            )
-
-        self.update_selection_info()
-
-    def _on_tree_click(self, event):
-        """点击表格行来切换选择状态"""
-        row = self.files_tree.identify_row(event.y)
-        col = self.files_tree.identify_column(event.x)
-        
-        if not row or not col:
-            return
-        
-        # 如果点击的是第一列或第二列，切换选中状态
-        if col in ("#1", "#2"):
-            self._toggle_selection(row)
-
-    def _toggle_selection(self, iid: str):
-        """切换单个文件的选择状态"""
-        self.selection_states[iid] = not self.selection_states.get(iid, False)
-        
-        # 更新表格显示
-        check_mark = "✓" if self.selection_states[iid] else ""
-        current_values = self.files_tree.item(iid, "values")
-        new_values = (check_mark,) + current_values[1:]
-        self.files_tree.item(iid, values=new_values)
-        
-        # 更新统计信息
-        self.update_selection_info()
-
-    def refresh_tree_overlays(self):
-        """刷新进度条位置"""
-        tree_h = self.files_tree.winfo_height()
-
-        for iid in self.files_tree.get_children(""):
-            bbox_prog = self.files_tree.bbox(iid, column="#7")
-            if bbox_prog:
-                x, y, w, h = bbox_prog
-                if not (y + h < 0 or y > tree_h):
-                    var = self.progress_vars.get(iid)
-                    if var is None:
-                        var = tk.DoubleVar(value=0.0)
-                        self.progress_vars[iid] = var
-                    pb = self.tree_progress.get(iid)
-                    if pb is None:
-                        pb = ttk.Progressbar(self.files_tree, orient="horizontal", mode="determinate", maximum=100.0, variable=var)
-                        self.tree_progress[iid] = pb
-                    pb.place(x=x+6, y=y+6, width=max(40, w-12), height=h-12)
-                else:
-                    pb = self.tree_progress.get(iid)
-                    if pb:
-                        pb.place_forget()
-
-    def update_selection_info(self):
-        """更新选择信息"""
-        total = len(self.selection_states)
-        selected = sum(1 for v in self.selection_states.values() if v)
-        self.files_info_var.set(f"已选择 {selected}/{total} 个文件")
-
-    def select_all_files(self):
-        """全选所有文件"""
-        for iid in self.files_tree.get_children():
-            self.selection_states[iid] = True
-            current_values = self.files_tree.item(iid, "values")
-            new_values = ("✓",) + current_values[1:]
-            self.files_tree.item(iid, values=new_values)
-        self.update_selection_info()
-
-    def unselect_all_files(self):
-        """全不选"""
-        for iid in self.files_tree.get_children():
-            self.selection_states[iid] = False
-            current_values = self.files_tree.item(iid, "values")
-            new_values = ("",) + current_values[1:]
-            self.files_tree.item(iid, values=new_values)
-        self.update_selection_info()
-
-    def invert_selection(self):
-        """反选"""
-        for iid in self.files_tree.get_children():
-            cur = self.selection_states.get(iid, True)
-            self.selection_states[iid] = not cur
-            check_mark = "✓" if self.selection_states[iid] else ""
-            current_values = self.files_tree.item(iid, "values")
-            new_values = (check_mark,) + current_values[1:]
-            self.files_tree.item(iid, values=new_values)
-        self.update_selection_info()
-
-    def on_tree_double_click(self, event):
-        """双击打开文件预览"""
-        region = self.files_tree.identify_region(event.x, event.y)
-        if region != "cell":
-            return
-        col = self.files_tree.identify_column(event.x)
-        row = self.files_tree.identify_row(event.y)
-        if not row:
-            return
-        if col == "#2":
-            directory = self.txt_dir.get()
-            path = os.path.join(directory, row)
-            self.open_text_preview(path)
-
-    def open_text_preview(self, path: str):
-        """打开文本预览"""
-        try:
-            sysname = platform.system()
-            if sysname == "Darwin":
-                subprocess.run(["open", path], check=False)
-            elif sysname == "Windows":
-                os.startfile(path)
-            else:
-                subprocess.run(["xdg-open", path], check=False)
-            self.set_status(f"已打开预览: {os.path.basename(path)}")
-        except Exception as e:
-            self.set_status(f"预览失败: {e}")
-
     def set_file_status(self, iid: str, status_text: str, spinning: bool = False):
-        """设置文件状态"""
+        """保留内部状态供统计使用，列表只显示面向用户的状态。"""
         def _apply():
+            display_status = display_task_status(status_text)
+            step_progress = display_task_progress(status_text)
             if spinning:
-                self.spinner_active[iid] = {"base": status_text, "idx": 0}
+                self.spinner_active[iid] = {"base": display_status, "idx": 0}
                 if self.spinner_job is None:
                     self.spinner_job = self.root.after(120, self._spinner_tick)
             else:
                 if iid in self.spinner_active:
                     del self.spinner_active[iid]
-                self.files_tree.set(iid, "status", status_text)
+                self.files_tree.set(iid, "status", display_status)
+
+            if step_progress:
+                self.files_tree.set(iid, "progress", step_progress)
+            elif display_status in {"✅ 已完成", "↪ 已跳过"}:
+                self.files_tree.set(iid, "progress", "100%")
+            elif display_status in {"等待处理", "❌ 生成失败", "■ 已停止"}:
+                self.files_tree.set(iid, "progress", "—")
+
+            if iid in getattr(self, "task_files", []):
+                self.task_statuses[iid] = status_text
+                self.update_overall_progress()
+
         self.root.after(0, _apply)
 
     def _spinner_tick(self):
-        """动画刻度"""
+        """状态动画刻度"""
         to_remove = []
         for iid, info in list(self.spinner_active.items()):
             base = info.get("base", "")
@@ -554,8 +763,10 @@ class AudiobookGenerator:
                 to_remove.append(iid)
                 continue
             info["idx"] = (idx + 1) % len(self.spinner_frames)
+
         for iid in to_remove:
             self.spinner_active.pop(iid, None)
+
         if self.spinner_active:
             self.spinner_job = self.root.after(120, self._spinner_tick)
         else:
@@ -571,558 +782,299 @@ class AudiobookGenerator:
 
     def preview_audio(self):
         """试听音频"""
+        if self.is_previewing:
+            self.set_status("试听正在生成中，请稍候...")
+            return
+
+        voice_name = self.voice_var.get()
+        speed = self.speed_var.get()
+        pitch = self.pitch_var.get()
+        volume = self.volume_var.get()
+        text = f"你好，我是你的有声书助手，现在是{voice_name}为您朗读。"
+
+        self.is_previewing = True
+        self.preview_btn.configure(state="disabled")
+        self.set_status("正在生成试听音频...")
+
         def worker():
-            voice_name = self.voice_var.get()
-            text = f"你好，我是你的有声书助手，现在是{voice_name}为您朗读。"
             tmp_file = None
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
                     tmp_file = tmp.name
-                self.edge.text_to_speech(
-                    text=text, voice=self.voice_var.get(),
-                    speed=self.speed_var.get(), pitch=self.pitch_var.get(),
-                    volume=self.volume_var.get(), output_file=tmp_file
-                )
+
+                last_error = None
+                max_attempts = 3
+
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        if os.path.exists(tmp_file):
+                            os.remove(tmp_file)
+
+                        self.edge.text_to_speech(
+                            text=text,
+                            voice=voice_name,
+                            speed=speed,
+                            pitch=pitch,
+                            volume=volume,
+                            output_file=tmp_file
+                        )
+
+                        if os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 0:
+                            last_error = None
+                            break
+                        raise RuntimeError("语音服务未生成有效音频文件")
+                    except Exception as e:
+                        last_error = e
+                        if attempt < max_attempts:
+                            self.set_status(
+                                f"试听暂时失败，正在自动重试（{attempt + 1}/{max_attempts}）..."
+                            )
+                            time.sleep(0.6 * attempt)
+
+                if last_error is not None:
+                    raise last_error
+
                 self.set_status("试听文件生成成功，开始播放...")
+
                 if platform.system() == "Darwin":
                     subprocess.run(["afplay", tmp_file], check=True, capture_output=True)
                 elif platform.system() == "Windows":
-                    proc = subprocess.Popen(["start", "/wait", tmp_file], shell=True,
-                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    proc = subprocess.Popen(
+                        ["start", "/wait", tmp_file],
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
                     proc.wait()
                 else:
                     subprocess.run(["xdg-open", tmp_file], check=True)
+
                 self.set_status("试听播放完成。")
+
             except FileNotFoundError:
                 self.set_status("播放失败: 系统命令未找到（macOS 需 afplay）")
             except subprocess.CalledProcessError as e:
                 self.set_status(f"播放命令失败: {e}")
             except Exception as e:
-                self.set_status(f"试听失败: {e}")
-                err_msg = str(e)
-                self.root.after(0, lambda msg=err_msg: messagebox.showerror("试听失败", f"无法连接到语音服务。\n\n错误信息：\n{msg}"))
+                friendly_message = self.format_tts_error(e)
+                self.set_status("试听失败，请按提示重试。")
+                self.root.after(
+                    0,
+                    lambda msg=friendly_message: messagebox.showerror(
+                        "试听失败",
+                        msg
+                    )
+                )
             finally:
                 if tmp_file and os.path.exists(tmp_file):
                     try:
                         os.remove(tmp_file)
                     except Exception:
                         pass
+
+                def finish_preview():
+                    self.is_previewing = False
+                    self.preview_btn.configure(state="normal")
+
+                try:
+                    self.root.after(0, finish_preview)
+                except Exception:
+                    pass
+
+        import threading
         threading.Thread(target=worker, daemon=True).start()
 
-    def start_generation(self):
-        """开始转换任务"""
-        self.stop_flag = False
-        if not self._has_ffmpeg():
-            self.set_status("未检测到 ffmpeg，若分段>1将无法合并；��尽量退化处理。")
-        self.set_status("开始转换任务...")
-        threading.Thread(target=self.generate, daemon=True).start()
+    @staticmethod
+    def format_tts_error(error: Exception) -> str:
+        """把 Edge TTS 的技术错误转换成普通用户能执行的提示。"""
+        technical_message = str(error).strip() or error.__class__.__name__
+        lower_message = technical_message.lower()
 
-    def stop_generation(self):
-        """停止转换任务"""
-        self.stop_flag = True
-        self.set_status("用户请求停止，正在中止任务...")
-
-    def open_output_dir(self):
-        """打开输出目录"""
-        txt_dir = self.txt_dir.get()
-        if not txt_dir or not os.path.isdir(txt_dir):
-            messagebox.showerror("错误", "请先选择有效的TXT目录")
-            return
-        out_dir = os.path.join(txt_dir, "Audio")
-        os.makedirs(out_dir, exist_ok=True)
-        if platform.system() == "Darwin": 
-            os.system(f'open "{out_dir}"')
-        elif platform.system() == "Windows": 
-            os.startfile(out_dir)
-        else: 
-            os.system(f'xdg-open "{out_dir}"')
-
-    # ====== 音频生成逻辑 ======
-
-    def estimate_duration(self, text: str) -> float:
-        """估算���长（分钟）"""
-        wpm = max(1, self.wpm_var.get())
-        clean_text = text.replace(" ", "").replace("\n", "").replace("\t", "")
-        char_count = len(clean_text)
-        return char_count / wpm
-
-    def split_long_text(self, text: str, target_duration: int, file_name: str) -> List[Tuple[str, List[str]]]:
-        """将长文本分割为多个接近目标时长的部分"""
-        wpm = max(1, self.wpm_var.get())
-        target_chars = target_duration * wpm  # 目标字数
-        
-        parts = []
-        paragraphs = text.split("\n\n")
-        
-        current = ""
-        for para in paragraphs:
-            if not para.strip():
-                continue
-            
-            test = current + "\n\n" + para if current else para
-            clean_len = len(test.replace(" ", "").replace("\n", "").replace("\t", ""))
-            
-            if clean_len <= target_chars:
-                current = test
-            else:
-                if current:
-                    parts.append((current, [file_name]))
-                
-                para_clean_len = len(para.replace(" ", "").replace("\n", "").replace("\t", ""))
-                
-                if para_clean_len > target_chars:
-                    sub_parts = self._split_paragraph(para, target_chars)
-                    parts.extend([(p, [file_name]) for p in sub_parts])
-                    current = ""
-                else:
-                    current = para
-        
-        if current:
-            parts.append((current, [file_name]))
-        
-        return parts if parts else [(text, [file_name])]
-
-    def _split_paragraph(self, paragraph: str, target_chars: int) -> List[str]:
-        """递归分割超长段落"""
-        para_clean_len = len(paragraph.replace(" ", "").replace("\n", "").replace("\t", ""))
-        
-        if para_clean_len <= target_chars:
-            return [paragraph]
-        
-        sentences = paragraph.replace("！", "！\n").replace("？", "？\n").replace("。", "。\n").split("\n")
-        
-        parts = []
-        current = ""
-        
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            
-            test = current + sentence if not current else current + "\n" + sentence
-            test_len = len(test.replace(" ", "").replace("\n", "").replace("\t", ""))
-            
-            if test_len <= target_chars:
-                current = test
-            else:
-                if current:
-                    parts.append(current)
-                
-                sentence_len = len(sentence.replace(" ", "").replace("\n", "").replace("\t", ""))
-                if sentence_len > target_chars:
-                    sub_parts = self._split_by_chars(sentence, target_chars)
-                    parts.extend(sub_parts)
-                    current = ""
-                else:
-                    current = sentence
-        
-        if current:
-            parts.append(current)
-        
-        return parts
-
-    def _split_by_chars(self, text: str, target_chars: int) -> List[str]:
-        """按字符数强制分割"""
-        if len(text) <= target_chars:
-            return [text]
-        
-        parts = []
-        for i in range(0, len(text), target_chars):
-            parts.append(text[i:i+target_chars])
-        
-        return parts
-
-    def get_selected_files(self) -> List[str]:
-        """获取已选择的文件列表"""
-        directory = self.txt_dir.get()
-        if not directory or not os.path.isdir(directory):
-            return []
-        return [iid for iid in self.files_tree.get_children() if self.selection_states.get(iid, False)]
-
-    def set_file_progress(self, iid: str, percent: float):
-        """设置文件进度"""
-        var = self.progress_vars.get(iid)
-        if var is None:
-            var = tk.DoubleVar(value=0.0)
-            self.progress_vars[iid] = var
-        self.root.after(0, lambda v=var, p=percent: v.set(max(0.0, min(100.0, float(p)))))
-
-    def set_error(self, iid: str, exc: Exception):
-        """设置错误信息"""
-        self.error_detail[iid] = str(exc)
-
-    def tts_with_retry(self, text: str, output_file: str, iid_for_error: Optional[str] = None, max_retries: int = 3) -> bool:
-        """TTS 转换 - 支持重试"""
-        last_exc = None
-        parent = os.path.dirname(output_file) or "."
-        os.makedirs(parent, exist_ok=True)
-
-        for n in range(1, max_retries + 1):
-            try:
-                if os.path.exists(output_file):
-                    try:
-                        os.remove(output_file)
-                    except Exception:
-                        pass
-
-                self.edge.text_to_speech(
-                    text=text, voice=self.voice_var.get(),
-                    speed=self.speed_var.get(), pitch=self.pitch_var.get(),
-                    volume=self.volume_var.get(), output_file=output_file
-                )
-
-                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                    return True
-                else:
-                    raise RuntimeError(f"TTS输出为空或未生成: {os.path.basename(output_file)}")
-
-            except Exception as e:
-                last_exc = e
-                if n < max_retries:
-                    time.sleep(min(1.5, 0.5 * n))
-
-        if iid_for_error:
-            self.set_error(iid_for_error, last_exc)
-        return False
-
-    def generate(self):
-        """生成有声书"""
-        txt_dir = self.txt_dir.get()
-        if not txt_dir or not os.path.isdir(txt_dir):
-            self.root.after(0, lambda: messagebox.showerror("错误", "请选择有效的TXT目录"))
-            return
-        
-        out_dir = os.path.join(txt_dir, "Audio")
-        os.makedirs(out_dir, exist_ok=True)
-
-        files = self.get_selected_files()
-        if not files:
-            self.set_status("请先在文件列表中勾选至少一个TXT文件。")
-            messagebox.showwarning("提示", "请在文件列表中勾选至少一个TXT文件。")
-            return
-
-        if not self.merge_var.get():
-            self.generate_single_files(files, txt_dir, out_dir)
-        else:
-            self.generate_merged_files(files, txt_dir, out_dir)
-
-        if self.stop_flag:
-            for f in files:
-                cur = self.files_tree.set(f, "status")
-                if cur not in ("✅ 已完成", "✅ 已完成，", "失败", "已存在(跳过)"):
-                    self.set_file_status(f, "已中断", spinning=False)
-            self.set_status("任务已中断。")
-        else:
-            self.set_status("所有任务处理完成。")
-
-
-
-
-
-
-
-
-    # ====== 音频生成逻辑 ======
-
-    def generate_single_files(self, files: List[str], txt_dir: str, out_dir: str):
-        
-        """单文件转换模式 - 支持长文本分割（分段编号只对同一文件生效）"""
-
-        # 单文件模式：也使用“目标时长”作为分割长度
-        target_minutes = int(self.target_duration_var.get())
-        target_minutes = max(10, min(120, target_minutes))
-
-        for f in files:
-            if self.stop_flag:
-                break
-
-            ipath = os.path.join(txt_dir, f)
-            text = self.read_text_file(ipath)
-            if text is None:
-                self.set_file_status(f, "失败：无法读取文件", spinning=False)
-                self.set_error(f, f"无法读取文件: {ipath}")
-                continue
-
-            text = text.strip()
-            file_duration = self.estimate_duration(text)
-
-            # 超过目标时长就拆分
-            if file_duration > target_minutes:
-                sub_parts = self.split_long_text(text, target_minutes, f)
-                split_total = len(sub_parts)
-
-                for idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
-                    if self.stop_flag:
-                        break
-                    _process_audio_chunk(
-                        text=sub_text,
-                        out_dir=out_dir,
-                        part_num=idx,
-                        file_list=sub_files,
-                        edge_tts_wrapper=self.edge,
-                        voice_var=self.voice_var,
-                        speed_var=self.speed_var,
-                        pitch_var=self.pitch_var,
-                        volume_var=self.volume_var,
-                        set_file_status=self.set_file_status,
-                        set_file_progress=self.set_file_progress,
-                        set_error=self.set_error,
-                        get_mp3_duration_str=self.get_mp3_duration_str,
-                        seconds_to_str=self.seconds_to_str,
-                        stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry,
-                        split_total=split_total
-                    )
-            else:
-                _process_audio_chunk(
-                    text=text,
-                    out_dir=out_dir,
-                    part_num=1,
-                    file_list=[f],
-                    edge_tts_wrapper=self.edge,
-                    voice_var=self.voice_var,
-                    speed_var=self.speed_var,
-                    pitch_var=self.pitch_var,
-                    volume_var=self.volume_var,
-                    set_file_status=self.set_file_status,
-                    set_file_progress=self.set_file_progress,
-                    set_error=self.set_error,
-                    get_mp3_duration_str=self.get_mp3_duration_str,
-                    seconds_to_str=self.seconds_to_str,
-                    stop_flag_check=lambda: self.stop_flag,
-                    tts_with_retry=self.tts_with_retry
-                )
-        """单文件转换模式 - 支持长文本分割（分段编号只对同一文件生效）"""
-        for f in files:
-            if self.stop_flag:
-                break
-
-            ipath = os.path.join(txt_dir, f)
-            text = self.read_text_file(ipath)
-            if text is None:
-                self.set_file_status(f, "失败：无法读取文件", spinning=False)
-                self.set_error(f, f"无法读取文件: {ipath}")
-                continue
-
-            text = text.strip()
-            file_duration = self.estimate_duration(text)
-
-            # 超过 60 分钟就拆成多个“目标时长”片段（这里仍用 40）
-            if file_duration > 60:
-                sub_parts = self.split_long_text(text, 40, f)
-                split_total = len(sub_parts)  # 新增：总共切成几段（关键！）
-                for idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
-                    if self.stop_flag:
-                        break
-                    _process_audio_chunk(
-                        text=sub_text,
-                        out_dir=out_dir,
-                        part_num=idx,  # 1,2,3...
-                        file_list=sub_files,
-                        edge_tts_wrapper=self.edge,
-                        voice_var=self.voice_var,
-                        speed_var=self.speed_var,
-                        pitch_var=self.pitch_var,
-                        volume_var=self.volume_var,
-                        set_file_status=self.set_file_status,
-                        set_file_progress=self.set_file_progress,
-                        set_error=self.set_error,
-                        get_mp3_duration_str=self.get_mp3_duration_str,
-                        seconds_to_str=self.seconds_to_str,
-                        stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry,
-                        split_total=split_total       # 新增
-                    )
-            else:
-                _process_audio_chunk(
-                    text=text,
-                    out_dir=out_dir,
-                    part_num=1,
-                    file_list=[f],
-                    edge_tts_wrapper=self.edge,
-                    voice_var=self.voice_var,
-                    speed_var=self.speed_var,
-                    pitch_var=self.pitch_var,
-                    volume_var=self.volume_var,
-                    set_file_status=self.set_file_status,
-                    set_file_progress=self.set_file_progress,
-                    set_error=self.set_error,
-                    get_mp3_duration_str=self.get_mp3_duration_str,
-                    seconds_to_str=self.seconds_to_str,
-                    stop_flag_check=lambda: self.stop_flag,
-                    tts_with_retry=self.tts_with_retry
-                    # 不切分就不用传 split_total（默认=1）
-                )
- 
-    def generate_merged_files(self, files: List[str], txt_dir: str, out_dir: str):
-        """合并模式 - 支持长文本分割"""
-        target_duration = self.target_duration_var.get()
-        part_num = 1
-        current_text = ""
-        current_duration = 0.0
-        current_files = []
-
-        for i, f in enumerate(files, 1):
-            if self.stop_flag:
-                break
-
-            ipath = os.path.join(txt_dir, f)
-            text = self.read_text_file(ipath)
-            if text is None:
-                self.set_file_status(f, "失败：无法读取文件", spinning=False)
-                self.set_error(f, f"无法读取文件: {ipath}")
-                continue
-            
-            text = text.strip()
-            file_duration = self.estimate_duration(text)
-
-            # 单个文件超过目标��长
-            if file_duration >= target_duration:
-                # 先处理累积的文本
-                if current_text and not self.stop_flag:
-                    _process_audio_chunk(
-                        text=current_text,
-                        out_dir=out_dir,
-                        part_num=part_num,
-                        file_list=current_files,
-                        edge_tts_wrapper=self.edge,
-                        voice_var=self.voice_var,
-                        speed_var=self.speed_var,
-                        pitch_var=self.pitch_var,
-                        volume_var=self.volume_var,
-                        set_file_status=self.set_file_status,
-                        set_file_progress=self.set_file_progress,
-                        set_error=self.set_error,
-                        get_mp3_duration_str=self.get_mp3_duration_str,
-                        seconds_to_str=self.seconds_to_str,
-                        stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry
-                    )
-                    part_num += 1
-                    current_text = ""
-                    current_duration = 0.0
-                    current_files = []
-
-                # 将长文本分割为多个部分
-                sub_parts = self.split_long_text(text, target_duration, f)
-                split_total = len(sub_parts)   # 新增
-
-                for sub_idx, (sub_text, sub_files) in enumerate(sub_parts, 1):
-                    if self.stop_flag:
-                        break
-                    _process_audio_chunk(
-                        text=sub_text,
-                        out_dir=out_dir,
-                        part_num=sub_idx,
-                        file_list=sub_files,
-                        edge_tts_wrapper=self.edge,
-                        voice_var=self.voice_var,
-                        speed_var=self.speed_var,
-                        pitch_var=self.pitch_var,
-                        volume_var=self.volume_var,
-                        set_file_status=self.set_file_status,
-                        set_file_progress=self.set_file_progress,
-                        set_error=self.set_error,
-                        get_mp3_duration_str=self.get_mp3_duration_str,
-                        seconds_to_str=self.seconds_to_str,
-                        stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry,
-                        split_total=split_total      # 新增
-                    )
-                    part_num += 1
-                continue
-
-            # 累积小文件
-            self.set_file_status(f, "等待合并", spinning=False)
-            
-            if current_duration + file_duration <= target_duration:
-                # 还没到目标时长，继续累积
-                current_text += ("\n\n" + text) if current_text else text
-                current_duration += file_duration
-                current_files.append(f)
-            else:
-                # 加上这个文件会超过目标时长，先处理累积的
-                if current_text and not self.stop_flag:
-                    _process_audio_chunk(
-                        text=current_text,
-                        out_dir=out_dir,
-                        part_num=part_num,
-                        file_list=current_files,
-                        edge_tts_wrapper=self.edge,
-                        voice_var=self.voice_var,
-                        speed_var=self.speed_var,
-                        pitch_var=self.pitch_var,
-                        volume_var=self.volume_var,
-                        set_file_status=self.set_file_status,
-                        set_file_progress=self.set_file_progress,
-                        set_error=self.set_error,
-                        get_mp3_duration_str=self.get_mp3_duration_str,
-                        seconds_to_str=self.seconds_to_str,
-                        stop_flag_check=lambda: self.stop_flag,
-                        tts_with_retry=self.tts_with_retry
-                    )
-                    part_num += 1
-                
-                # 新一轮，从当前文件开始
-                current_text = text
-                current_duration = file_duration
-                current_files = [f]
-
-        # 处理最后剩余的文本
-        if current_text and not self.stop_flag:
-            _process_audio_chunk(
-                text=current_text,
-                out_dir=out_dir,
-                part_num=part_num,
-                file_list=current_files,
-                edge_tts_wrapper=self.edge,
-                voice_var=self.voice_var,
-                speed_var=self.speed_var,
-                pitch_var=self.pitch_var,
-                volume_var=self.volume_var,
-                set_file_status=self.set_file_status,
-                set_file_progress=self.set_file_progress,
-                set_error=self.set_error,
-                get_mp3_duration_str=self.get_mp3_duration_str,
-                seconds_to_str=self.seconds_to_str,
-                stop_flag_check=lambda: self.stop_flag,
-                tts_with_retry=self.tts_with_retry
+        if "no audio was received" in lower_message:
+            return (
+                "语音服务本次没有返回音频，程序已自动重试 3 次。\n\n"
+                "你可以这样处理：\n"
+                "1. 点击「刷新列表」后重新选择音色；\n"
+                "2. 保持语速、音调和音量为默认值再试听；\n"
+                "3. 如果仍然失败，等待几分钟后再试。\n\n"
+                f"技术信息：{technical_message}"
             )
 
+        return (
+            "试听音频生成失败，程序已自动重试 3 次。\n\n"
+            "请检查网络，或点击「刷新列表」后换一个音色再试。\n\n"
+            f"技术信息：{technical_message}"
+        )
+
+    def open_output_dir(self):
+        """打开输出音频目录"""
+        txt_dir = self.txt_dir.get().strip()
+        if not txt_dir or not os.path.isdir(txt_dir):
+            source_dir = self.resolve_source_epub_dir(
+                txt_dir,
+                self.config_mgr.get("last_epub_path", ""),
+            )
+            if source_dir:
+                self._open_directory_path(source_dir)
+                self.set_status("TXT目录已不存在，已打开原 EPUB 所在目录")
+                return
+
+            messagebox.showerror("错误", "未找到有效的 TXT 目录或原 EPUB 所在目录")
+            return
+
+        out_dir = self.get_audio_output_dir()
+        if not out_dir:
+            messagebox.showerror("错误", "无法确定音频输出目录")
+            return
+
+        os.makedirs(out_dir, exist_ok=True)
+
+        self._open_directory_path(out_dir)
+
+    @staticmethod
+    def parse_drop_paths(root, raw_data: str):
+        """解析 Finder / Explorer 拖放数据，兼容中文、空格和多文件。"""
+        if not raw_data:
+            return []
+        try:
+            return [str(path) for path in root.tk.splitlist(raw_data) if str(path).strip()]
+        except Exception:
+            return [str(raw_data).strip()] if str(raw_data).strip() else []
+
+    def _setup_epub_drop(self):
+        """让整个主窗口接收 EPUB 文件拖放。"""
+        if (
+            not self.drag_and_drop_available
+            or DND_FILES is None
+            or not hasattr(self.root, "drop_target_register")
+        ):
+            return
+        try:
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind("<<DragEnter>>", self._on_epub_drag_enter)
+            self.root.dnd_bind("<<DragLeave>>", self._on_epub_drag_leave)
+            self.root.dnd_bind("<<Drop>>", self._on_epub_drop)
+        except Exception as e:
+            print(f"文件拖放初始化失败: {e}")
+
+    def _on_epub_drag_enter(self, _event):
+        if self.is_generating or self.is_importing_epub:
+            self.set_status("当前任务进行中，暂时不能导入新的 EPUB")
+        else:
+            self.set_status("松开以导入 EPUB")
+        return "copy"
+
+    def _on_epub_drag_leave(self, _event):
+        if not self.is_generating and not self.is_importing_epub:
+            self.set_status("就绪")
+
+    def _on_epub_drop(self, event):
+        paths = self.parse_drop_paths(self.root, getattr(event, "data", ""))
+        if self.is_generating or self.is_importing_epub:
+            messagebox.showwarning("暂时无法导入", "当前任务进行中，请等待完成或停止后再拖入 EPUB。")
+            return "break"
+        if len(paths) != 1:
+            messagebox.showwarning("无法导入", "一次请只拖入一本 EPUB。")
+            self.set_status("一次请只拖入一本 EPUB")
+            return "break"
+        self._import_epub_path(paths[0])
+        return "break"
+
     def import_epub(self):
-        """导入 EPUB 文件"""
+        """通过文件选择器导入 EPUB。"""
+        if self.is_generating or self.is_importing_epub:
+            messagebox.showwarning("暂时无法导入", "当前任务进行中，请等待完成或停止后再导入 EPUB。")
+            return
         path = filedialog.askopenfilename(
             title="选择 EPUB",
             filetypes=[("EPUB 文件", "*.epub"), ("所有文件", "*.*")]
         )
         if not path:
             return
+        self._import_epub_path(path)
+
+    def _import_epub_path(self, path: str):
+        """处理已选定的 EPUB 路径；按钮与拖放共用同一转换入口。"""
+        path = os.path.abspath(os.path.expanduser(str(path or "").strip()))
         if not path.lower().endswith(".epub"):
-            messagebox.showerror("格式错误", "请选择 .epub 文件")
+            messagebox.showerror("格式错误", "只支持导入 .epub 文件。")
+            self.set_status("导入失败：不是 EPUB 文件")
             return
+        if not os.path.isfile(path):
+            messagebox.showerror("文件不存在", "未找到拖入的 EPUB 文件。")
+            self.set_status("导入失败：文件不存在")
+            return
+
+        self.is_importing_epub = True
+        self.update_action_buttons_state()
         try:
             self.set_status("正在从EPUB提取章节文本…")
-            target_minutes = int(self.target_duration_var.get())
-            wpm = max(1, int(self.wpm_var.get()))
-            max_chars_per_file = target_minutes * wpm  # 例如 40*300=12000
+            max_chars_per_file = 200000
 
             out_dir, converted_count, total_files = convert_epub_to_txt(
                 path,
                 progress_callback=lambda s: self.set_status(f"EPUB：{s}"),
                 max_chars_per_file=max_chars_per_file
             )
+
             self.txt_dir.set(out_dir)
             self.config_mgr.set("last_txt_dir", out_dir)
+            self.config_mgr.set("last_epub_path", path)
             self.load_file_list(out_dir)
-            self.set_status(f"EPUB转换完成：生成 {converted_count} 章 / {total_files} 个TXT")
+            self.update_action_buttons_state()
+            self._refresh_dir_snapshot()
+            self.set_status(f"EPUB转换完成：生成 {converted_count} 个TXT / {total_files} 个章节")
+
         except Exception as e:
             messagebox.showerror("EPUB转换失败", str(e))
             self.set_status("EPUB转换失败")
+        finally:
+            self.is_importing_epub = False
+            self.update_action_buttons_state()
 
     def on_closing(self):
-        """窗口关闭时保存配置"""
+        """运行中关闭先确认，并等待当前任务安全停止。"""
+        if self.is_generating:
+            if self.exit_after_stop:
+                self.set_status("正在安全停止当前任务，请稍候...")
+                return
+
+            should_exit = messagebox.askyesno(
+                "停止任务并退出？",
+                "转换仍在进行，确定要停止任务并退出吗？\n\n"
+                "已经成功生成的 MP3 会保留，当前未完成的片段将被清理。",
+                icon="warning",
+            )
+            if not should_exit:
+                return
+
+            self.exit_after_stop = True
+            self.stop_generation()
+            self.set_status("正在安全停止当前任务，完成后将自动退出...")
+            return
+
+        self._close_app()
+
+    def _close_app(self):
+        """保存配置并关闭窗口；只在后台任务已退出后调用。"""
         self.stop_flag = True
-        edge_voice_name = VOICE_MAPPING.get(self.voice_var.get(), "zh-CN-XiaoxiaoNeural")
+        self.tts_cancel_event.set()
+
+        if self.elapsed_timer_job is not None:
+            try:
+                self.root.after_cancel(self.elapsed_timer_job)
+            except Exception:
+                pass
+            self.elapsed_timer_job = None
+
+        if self.dir_watch_job is not None:
+            try:
+                self.root.after_cancel(self.dir_watch_job)
+            except Exception:
+                pass
+            self.dir_watch_job = None
+
+        edge_voice_name = VOICE_MAPPING.get(self.voice_var.get(), DEFAULT_VOICE_NAME)
         self.config_mgr.set("edge", {
             "voice_name": edge_voice_name,
             "speed": self.speed_var.get(),
@@ -1138,4 +1090,4 @@ class AudiobookGenerator:
 
     def run(self):
         """运行应用"""
-        self.root.mainloop()          
+        self.root.mainloop()

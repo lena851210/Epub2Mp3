@@ -1,12 +1,13 @@
 {
   "edge": {
-    "voice_name": "zh-CN-XiaoxiaoNeural",
-    "speed": 1.0,
+    "voice_name": "zh-CN-YunjianNeural",
+    "speed": 0.8,
     "pitch": 0,
-    "volume": 0
+    "volume": 100
   },
-  "last_txt_dir": "/Users/【用户名】/【文件夹名】/【文件名】_txt",
+  "last_txt_dir": "",
+  "last_epub_path": "",
   "merge_audio": true,
   "target_duration": 40,
-  "words_per_minute": 300
+  "words_per_minute": 240
 }

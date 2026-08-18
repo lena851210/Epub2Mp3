@@ -37,6 +37,10 @@ temp/
 # 如果你会生成中间txt/解压内容，也可以按需忽略：
 *.txt
 *.epub
+!requirements.txt
+!项目结构说明.txt
 
 # ===== User-specific config =====
 config.json
+tts_runtime.log
+archive/local-config-snapshot.json

@@ -1,0 +1,164 @@
+import os
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+
+from models import (
+    ConfigManager,
+    DEFAULT_PITCH,
+    DEFAULT_SPEED,
+    DEFAULT_VOICE_NAME,
+    DEFAULT_VOLUME,
+    DEFAULT_WORDS_PER_MINUTE,
+    EdgeTTSWrapper,
+    TTSRequestStopped,
+    TTSRequestTimeout,
+    VOICE_MAPPING,
+    clean_text_from_html_bytes,
+)
+
+
+class FakeCommunicate:
+    calls = []
+
+    def __init__(self, text, voice, rate, pitch, volume):
+        self.__class__.calls.append(
+            {
+                "text": text,
+                "voice": voice,
+                "rate": rate,
+                "pitch": pitch,
+                "volume": volume,
+            }
+        )
+
+    async def save(self, output_file):
+        self.output_file = output_file
+
+
+class EdgeTTSWrapperTests(unittest.TestCase):
+    def setUp(self):
+        FakeCommunicate.calls.clear()
+
+    @patch("models.edge_tts.list_voices")
+    def test_initialization_does_not_request_network(self, list_voices):
+        wrapper = EdgeTTSWrapper()
+
+        list_voices.assert_not_called()
+        self.assertEqual(wrapper.voices, list(VOICE_MAPPING.keys()))
+
+    def test_resolve_voice_accepts_label_and_voice_code(self):
+        wrapper = EdgeTTSWrapper()
+        voice_code = VOICE_MAPPING["晓晓(女)"]
+
+        self.assertEqual(wrapper._resolve_voice_code("晓晓(女)"), voice_code)
+        self.assertEqual(wrapper._resolve_voice_code(voice_code), voice_code)
+
+    @patch("models.edge_tts.Communicate")
+    def test_segment_total_timeout_cancels_request(self, communicate_mock):
+        async def never_finishes(_output_file):
+            import asyncio
+            await asyncio.sleep(10)
+
+        communicate_mock.return_value.save.side_effect = never_finishes
+        wrapper = EdgeTTSWrapper()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(TTSRequestTimeout):
+                wrapper.text_to_speech(
+                    "超时测试",
+                    "晓晓(女)",
+                    1.0,
+                    0,
+                    0,
+                    os.path.join(temp_dir, "timeout.mp3"),
+                    total_timeout=0.02,
+                )
+
+    @patch("models.edge_tts.Communicate")
+    def test_segment_request_can_be_stopped(self, communicate_mock):
+        async def never_finishes(_output_file):
+            import asyncio
+            await asyncio.sleep(10)
+
+        communicate_mock.return_value.save.side_effect = never_finishes
+        cancel_event = threading.Event()
+        cancel_event.set()
+        wrapper = EdgeTTSWrapper()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(TTSRequestStopped):
+                wrapper.text_to_speech(
+                    "停止测试",
+                    "晓晓(女)",
+                    1.0,
+                    0,
+                    0,
+                    os.path.join(temp_dir, "stopped.mp3"),
+                    total_timeout=5,
+                    cancel_event=cancel_event,
+                )
+
+    @patch("models.edge_tts.Communicate", FakeCommunicate)
+    def test_text_to_speech_requests_synthesis_once(self):
+        wrapper = EdgeTTSWrapper()
+
+        wrapper.text_to_speech(
+            text="测试文本",
+            voice="晓晓(女)",
+            speed=1.0,
+            pitch=0,
+            volume=0,
+            output_file="unused.mp3",
+        )
+
+        self.assertEqual(len(FakeCommunicate.calls), 1)
+        self.assertEqual(
+            FakeCommunicate.calls[0]["voice"],
+            VOICE_MAPPING["晓晓(女)"],
+        )
+
+
+class ConfigManagerTests(unittest.TestCase):
+    def test_new_config_uses_product_voice_defaults(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ConfigManager(os.path.join(temp_dir, "config.json"))
+
+            self.assertEqual(
+                config.get("edge"),
+                {
+                    "voice_name": DEFAULT_VOICE_NAME,
+                    "speed": DEFAULT_SPEED,
+                    "pitch": DEFAULT_PITCH,
+                    "volume": DEFAULT_VOLUME,
+                },
+            )
+            self.assertEqual(config.get("words_per_minute"), DEFAULT_WORDS_PER_MINUTE)
+
+
+class HtmlTextCleaningTests(unittest.TestCase):
+    def test_body_text_containing_note_word_is_not_dropped(self):
+        html = """
+        <html><head><title>第一章 中国为什么叫中国</title></head><body>
+          <div>
+            <h1>第一章</h1>
+            <h1>中国为什么叫中国</h1>
+            <p>中国文明的起点</p>
+            <p>这是正文，作者在这里讨论一个注释中的观点。</p>
+            <aside epub:type="footnote"><p>这是应该删除的脚注。</p></aside>
+            <p>这是脚注之后仍应保留的正文。</p>
+          </div>
+        </body></html>
+        """
+
+        _title, text = clean_text_from_html_bytes(html.encode("utf-8"))
+
+        self.assertIn("中国文明的起点", text)
+        self.assertIn("注释中的观点", text)
+        self.assertIn("脚注之后仍应保留", text)
+        self.assertNotIn("应该删除的脚注", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

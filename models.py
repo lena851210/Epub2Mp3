@@ -9,13 +9,37 @@ import json
 import threading
 import unicodedata
 import asyncio
+import contextlib
+import warnings
+from enum import Enum
 from typing import Dict, Any, List, Tuple
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
 import edge_tts
 
 # ====== 常量定义 ======
 BASE_WORDS_PER_MINUTE = 300
+DEFAULT_VOICE_NAME = "zh-CN-YunjianNeural"
+DEFAULT_SPEED = 0.8
+DEFAULT_PITCH = 0
+DEFAULT_VOLUME = 100
+DEFAULT_WORDS_PER_MINUTE = int(BASE_WORDS_PER_MINUTE * DEFAULT_SPEED)
+
+
+class TTSResult(str, Enum):
+    """一次 TTS segment 的明确结果，避免把用户停止误判为失败。"""
+
+    SUCCESS = "success"
+    FAILED = "failed"
+    STOPPED = "stopped"
+
+
+class TTSRequestTimeout(TimeoutError):
+    """单个 TTS segment 超过允许的总等待时间。"""
+
+
+class TTSRequestStopped(Exception):
+    """用户主动取消当前 TTS segment。"""
 
 VOICE_MAPPING = {
     "晓晓(女)": "zh-CN-XiaoxiaoNeural",
@@ -52,11 +76,17 @@ class ConfigManager:
     def _load(self) -> Dict[str, Any]:
         """加载配置文件"""
         default = {
-            "edge": {"voice_name": "zh-CN-XiaoxiaoNeural", "speed": 1.0, "pitch": 0, "volume": 0},
+            "edge": {
+                "voice_name": DEFAULT_VOICE_NAME,
+                "speed": DEFAULT_SPEED,
+                "pitch": DEFAULT_PITCH,
+                "volume": DEFAULT_VOLUME,
+            },
             "last_txt_dir": "",
+            "last_epub_path": "",
             "merge_audio": True,
             "target_duration": 40,
-            "words_per_minute": BASE_WORDS_PER_MINUTE
+            "words_per_minute": DEFAULT_WORDS_PER_MINUTE
         }
         if os.path.exists(self.config_file):
             try:
@@ -155,32 +185,56 @@ class DurationEstimator:
 # ====== 【Class 3】TTS 包装器 ======
 class EdgeTTSWrapper:
     """Edge TTS 语音合成包装"""
+
     def __init__(self):
-        self.voices = []
-        self._load_voices_blocking()
-        threading.Thread(target=self._load_voices_async, daemon=True).start()
+        # 启动时直接使用本地预设，避免网络波动阻塞整个界面。
+        # 用户点击“刷新列表”时，再联网过滤当前真正可用的音色。
+        self.voices = list(VOICE_MAPPING.keys())
+        self.available_voice_codes = set()
+
+    def _fetch_available_voice_codes(self) -> set:
+        """获取 edge-tts 当前真实可用的 voice short name 集合"""
+        loop = asyncio.new_event_loop()
+        try:
+            raw_voices = loop.run_until_complete(edge_tts.list_voices())
+
+            voice_codes = set()
+            for item in raw_voices:
+                # edge-tts 返回的字段通常包含 ShortName
+                short_name = item.get("ShortName")
+                if short_name:
+                    voice_codes.add(short_name)
+            return voice_codes
+        except Exception as e:
+            print("获取真实可用声音列表失败:", e)
+            return set()
+        finally:
+            loop.close()
+
+    def _build_visible_voice_labels(self, available_codes: set) -> list:
+        """
+        根据真实可用的 voice code，过滤出 UI 中应显示的中文标签。
+        如果获取失败，则退回到全部 VOICE_MAPPING（避免整个菜单为空）。
+        """
+        if not available_codes:
+            return list(VOICE_MAPPING.keys())
+
+        labels = []
+        for label, code in VOICE_MAPPING.items():
+            if code in available_codes:
+                labels.append(label)
+
+        # 如果交集为空，为避免 UI 完全空白，退回全部
+        return labels if labels else list(VOICE_MAPPING.keys())
 
     def _load_voices_blocking(self):
         """同步加载声音列表"""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            _ = loop.run_until_complete(edge_tts.list_voices())
-            self.voices = list(VOICE_MAPPING.keys())
-            loop.close()
+            self.available_voice_codes = self._fetch_available_voice_codes()
+            self.voices = self._build_visible_voice_labels(self.available_voice_codes)
         except Exception as e:
-            print("获取声音列表失败:", e)
-            self.voices = list(VOICE_MAPPING.keys())
-
-    def _load_voices_async(self):
-        """异步加载声音列表"""
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            _ = loop.run_until_complete(edge_tts.list_voices())
-            self.voices = list(VOICE_MAPPING.keys())
-        except Exception as e:
-            print("异步加载声音失败:", e)
+            print("同步加载声音列表失败:", e)
+            self.available_voice_codes = set()
             self.voices = list(VOICE_MAPPING.keys())
 
     def refresh_voices(self):
@@ -191,45 +245,76 @@ class EdgeTTSWrapper:
     def _resolve_voice_code(self, voice: str) -> str:
         """允许 voice 既可以是 UI 标签，也可以直接是 zh-CN-xxxNeural 代码"""
         if not voice:
-            return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
+            return DEFAULT_VOICE_NAME
+
         # 1) UI 标签（例如：晓晓(女)）
         if voice in VOICE_MAPPING:
             return VOICE_MAPPING[voice]
+
         # 2) 直接传入的 voice code（例如：zh-CN-XiaoxiaoNeural）
         if voice in VOICE_MAPPING.values():
             return voice
         if isinstance(voice, str) and re.match(r"^[a-z]{2}-[A-Z]{2}-", voice):
             return voice
-        return VOICE_MAPPING.get("晓晓(女)", "zh-CN-XiaoxiaoNeural")
 
-    def text_to_speech(self, text: str, voice: str, speed: float, pitch: float, volume: float, output_file: str):
-        """文本转语音"""
+        return DEFAULT_VOICE_NAME
+
+    def text_to_speech(
+        self,
+        text: str,
+        voice: str,
+        speed: float,
+        pitch: float,
+        volume: float,
+        output_file: str,
+        total_timeout: float = 75.0,
+        cancel_event: threading.Event = None,
+    ):
+        """文本转语音；支持单 segment 总超时和用户主动取消。"""
         edge_voice = self._resolve_voice_code(voice)
 
         async def _synth():
             communicate = edge_tts.Communicate(
-                text, edge_voice,
-                rate=f"{(speed-1)*100:+.0f}%",
+                text,
+                edge_voice,
+                rate=f"{(speed - 1) * 100:+.0f}%",
                 pitch=f"{pitch:+.0f}Hz",
                 volume=f"{volume:+.0f}%"
             )
-            await communicate.save(output_file)
+            save_task = asyncio.create_task(communicate.save(output_file))
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max(0.01, float(total_timeout))
 
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(_synth())
-        finally:
-            loop.close()
-        """文本转语音"""
-        edge_voice = VOICE_MAPPING.get(voice, "zh-CN-XiaoxiaoNeural")
-        async def _synth():
-            communicate = edge_tts.Communicate(
-                text, edge_voice,
-                rate=f"{(speed-1)*100:+.0f}%",
-                pitch=f"{pitch:+.0f}Hz",
-                volume=f"{volume:+.0f}%"
-            )
-            await communicate.save(output_file)
+            try:
+                while not save_task.done():
+                    if cancel_event is not None and cancel_event.is_set():
+                        save_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await save_task
+                        raise TTSRequestStopped("用户已停止当前语音请求")
+
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        save_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await save_task
+                        raise TTSRequestTimeout(
+                            f"单段语音请求超过 {float(total_timeout):.0f} 秒"
+                        )
+
+                    done, _pending = await asyncio.wait(
+                        {save_task},
+                        timeout=min(0.25, remaining),
+                    )
+                    if done:
+                        await save_task
+                        return
+            finally:
+                if not save_task.done():
+                    save_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await save_task
+
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(_synth())
@@ -270,14 +355,54 @@ def safe_node_attrs(node: Any) -> str:
 
 def looks_like_noise(node: Any) -> bool:
     """判断节点是否为噪音（脚注等）"""
+    # 不少 EPUB 会给正文标题加上 sigil_toc_id_x 锚点。
+    # 它们是“目录定位到正文”的标记，不是目录噪音。
+    try:
+        if getattr(node, "name", "") in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            return False
+        if isinstance(node, Tag) and node.find_parent(("h1", "h2", "h3", "h4", "h5", "h6")):
+            return False
+    except Exception:
+        pass
+
     attrs = safe_node_attrs(node)
     return any(k in attrs for k in NOISE_KEYWORDS)
 
 
+def remove_image_only_captions(soup: BeautifulSoup):
+    """移除只为相邻图片服务的简短图注。
+
+    只处理“图片后紧跟 + 以 ▲/△ 开头”的明确结构，
+    避免按字数删除正文中有意义的短句。
+    """
+    for image in list(soup.find_all("img")):
+        try:
+            image_block = image.parent if isinstance(image.parent, Tag) else image
+            caption = image_block.find_next_sibling()
+            while isinstance(caption, NavigableString) and not str(caption).strip():
+                caption = caption.next_sibling
+
+            if not isinstance(caption, Tag):
+                continue
+
+            caption_text = text_of(caption).strip()
+            if caption_text.startswith(("▲", "△")) and len(caption_text) <= 80:
+                caption.decompose()
+        except Exception:
+            continue
+
+
 def prepare_soup(html: str) -> BeautifulSoup:
     """清理 HTML 并准备 BeautifulSoup"""
-    soup = BeautifulSoup(html, "lxml")
+    # EPUB 正文通常是 XHTML；按 HTML 宽容解析是有意为之，
+    # 只屏蔽 BeautifulSoup 对这一已知场景的提示。
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        soup = BeautifulSoup(html, "lxml")
     
+    # 图片本身会在下一步删除，先借助它与图注的位置关系过滤无意义朗读。
+    remove_image_only_captions(soup)
+
     # 删除不需要的标签
     for t in list(soup.find_all(REMOVE_TAGS)):
         try:
@@ -365,14 +490,16 @@ def soup_to_paragraphs(soup: BeautifulSoup) -> str:
     paras: List[str] = []
     for blk in list(body.find_all(BLOCK_TAGS)):
         try:
-            if any(parent.name in BLOCK_TAGS for parent in getattr(blk, "parents", [])):
+            # 优先提取没有更细块级子元素的叶子块。
+            # 如果按外层 div 提取，整章会被压成一个大段落，
+            # 也会让局部的脚注关键字误伤整章。
+            if blk.find(BLOCK_TAGS):
                 continue
         except Exception:
             pass
         t = text_of(blk)
         if t:
-            if not re.search(r'注释|注\d+|footnote|note|注解', t, re.IGNORECASE):
-                paras.append(t)
+            paras.append(t)
     
     if len(paras) <= 1:
         whole = " ".join(s.strip() for s in body.stripped_strings) if hasattr(body, "stripped_strings") else ""
@@ -380,7 +507,7 @@ def soup_to_paragraphs(soup: BeautifulSoup) -> str:
             parts = re.split(r"(?<=[。！？\.\?\!])\s+|\n{2,}|\r\n", whole)
             parts = [p.strip() for p in parts if p.strip()]
             if parts:
-                paras = [p for p in parts if not re.search(r'注释|注\d+|footnote|note|注解', p, re.IGNORECASE)]
+                paras = parts
     
     txt = "\n\n".join(paras)
     txt = normalize_whitespace(txt)
