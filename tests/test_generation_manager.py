@@ -168,6 +168,88 @@ class GenerationManagerTests(unittest.TestCase):
 
         self.assertEqual(process_mock.call_count, 2)
 
+    @patch("generation_manager._process_audio_chunk", return_value=TTSResult.SUCCESS)
+    def test_plain_mode_preserves_original_numbers_when_selection_has_gaps(self, process_mock):
+        generator = TestGeneration()
+        generator.current_cover_path = None
+        generator.current_book_metadata = None
+        generator.read_text_file = Mock(return_value="正文")
+        generator.get_mp3_duration_str = Mock(return_value="")
+        generator.seconds_to_str = Mock(return_value="")
+        generator.set_file_progress = Mock()
+
+        selected_files = ["001 前言.txt", "003 第一章.txt", "005 第三章.txt"]
+        generator.generate_plain_files(selected_files, "/tmp", "/tmp/out")
+
+        self.assertEqual(
+            [call.kwargs["track_number"] for call in process_mock.call_args_list],
+            [1, 3, 5],
+        )
+
+    @patch("generation_manager._process_audio_chunk", return_value=TTSResult.SUCCESS)
+    def test_plain_mode_keeps_original_number_across_later_batches(self, process_mock):
+        generator = TestGeneration()
+        generator.current_cover_path = None
+        generator.current_book_metadata = None
+        generator.read_text_file = Mock(return_value="正文")
+        generator.get_mp3_duration_str = Mock(return_value="")
+        generator.seconds_to_str = Mock(return_value="")
+        generator.set_file_progress = Mock()
+
+        generator.generate_plain_files(
+            ["021 第二十一章.txt", "022 第二十二章.txt", "040 第四十章.txt"],
+            "/tmp",
+            "/tmp/out",
+        )
+
+        self.assertEqual(
+            [call.kwargs["track_number"] for call in process_mock.call_args_list],
+            [21, 22, 40],
+        )
+
+    @patch("generation_manager._process_audio_chunk", return_value=TTSResult.SUCCESS)
+    def test_plain_mode_single_chapter_and_retry_keep_original_number(self, process_mock):
+        generator = TestGeneration()
+        generator.current_cover_path = None
+        generator.current_book_metadata = None
+        generator.read_text_file = Mock(return_value="正文")
+        generator.get_mp3_duration_str = Mock(return_value="")
+        generator.seconds_to_str = Mock(return_value="")
+        generator.set_file_progress = Mock()
+
+        generator.generate_plain_files(["037 某章节.txt"], "/tmp", "/tmp/out")
+        generator.generate_plain_files(["054 失败后重试.txt"], "/tmp", "/tmp/out")
+
+        self.assertEqual(
+            [call.kwargs["track_number"] for call in process_mock.call_args_list],
+            [37, 54],
+        )
+
+    @patch("generation_manager._process_audio_chunk", return_value=TTSResult.SUCCESS)
+    def test_merged_mode_keeps_final_audio_block_numbering(self, process_mock):
+        generator = TestGeneration()
+        generator.target_duration_var = Value(40)
+        generator.current_cover_path = None
+        generator.current_book_metadata = None
+        generator.read_text_file = Mock(return_value="正文")
+        generator.estimate_duration = Mock(return_value=10)
+        generator.get_mp3_duration_str = Mock(return_value="")
+        generator.seconds_to_str = Mock(return_value="")
+        generator.set_file_progress = Mock()
+
+        generator.generate_merged_files(
+            ["021 第二十一章.txt", "022 第二十二章.txt"],
+            "/tmp",
+            "/tmp/out",
+        )
+
+        process_mock.assert_called_once()
+        self.assertEqual(process_mock.call_args.kwargs["track_number"], 1)
+        self.assertEqual(
+            process_mock.call_args.kwargs["file_list"],
+            ["021 第二十一章.txt", "022 第二十二章.txt"],
+        )
+
     @patch("generation_manager._process_audio_chunk")
     def test_merged_long_chapter_stops_after_middle_part_failure(self, process_mock):
         generator = TestGeneration()

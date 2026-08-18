@@ -33,6 +33,13 @@ def _parse_num_and_title(stem: str) -> Tuple[Optional[int], str]:
     return None, s
 
 
+def get_original_chapter_number(filename: str) -> Optional[int]:
+    """从 TXT 文件名读取 EPUB 解析阶段已经确定的原始章节序号。"""
+    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    chapter_number, _title = _parse_num_and_title(stem)
+    return chapter_number
+
+
 def _short_title(title: str, max_len: int = 20) -> str:
     """缩短标题，避免文件名过长"""
     t = (title or "").strip()
@@ -242,7 +249,7 @@ def build_audio_metadata(
     split_total: int = 1,
     track_number: Optional[int] = None,
 ) -> Dict[str, str]:
-    """组装精简 MP3 标签：Title 以最终音轨顺序编号开头。"""
+    """组装精简 MP3 标签：Title 使用调用方明确传入的音轨序号。"""
     metadata = dict(book_metadata or {})
     track_titles = metadata.get("tracks", {})
     if not isinstance(track_titles, dict):

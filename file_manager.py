@@ -48,6 +48,16 @@ def display_task_progress(status_text: str) -> str:
     return f"{match.group(1)} / {match.group(2)}" if match else ""
 
 
+def is_selection_column_hit(region: str, column: str) -> bool:
+    """Treeview 的 #0 列属于 tree 区域；整个选择单元格都应可点击。"""
+    return column == "#0" and region in {"tree", "cell"}
+
+
+def resolve_scanned_selection(current: bool, scanned: bool, user_overridden: bool) -> bool:
+    """后台音频检查不得覆盖用户已经明确做出的选择。"""
+    return current if user_overridden else scanned
+
+
 class FileManagerMixin:
     """文件列表、目录监测、选择状态相关方法"""
 
@@ -123,6 +133,7 @@ class FileManagerMixin:
             self.files_tree.delete(iid)
 
         self.selection_states.clear()
+        self._manual_selection_overrides = set()
         self.file_chars.clear()
 
         self.files_info_var.set(info_text)
@@ -203,6 +214,7 @@ class FileManagerMixin:
             self.files_tree.delete(iid)
 
         self.selection_states.clear()
+        self._manual_selection_overrides = set()
         self.file_chars.clear()
 
         if not os.path.isdir(directory):
@@ -342,7 +354,11 @@ class FileManagerMixin:
         if not self.files_tree.exists(iid):
             return
 
-        self.selection_states[iid] = is_selected
+        self.selection_states[iid] = resolve_scanned_selection(
+            self.selection_states.get(iid, False),
+            is_selected,
+            iid in getattr(self, "_manual_selection_overrides", set()),
+        )
         current_values = self.files_tree.item(iid, "values")
         if not current_values or len(current_values) < 6:
             return
@@ -357,7 +373,7 @@ class FileManagerMixin:
         )
         self.files_tree.item(
             iid,
-            image=(self.checkbox_checked_image if is_selected else self.checkbox_unchecked_image),
+            image=(self.checkbox_checked_image if self.selection_states[iid] else self.checkbox_unchecked_image),
             values=new_values,
         )
 
@@ -380,10 +396,10 @@ class FileManagerMixin:
         col = self.files_tree.identify_column(event.x)
         region = self.files_tree.identify_region(event.x, event.y)
 
-        if not row or not col or region != "cell":
+        if not row or not col:
             return
 
-        if col == "#0":
+        if is_selection_column_hit(region, col):
             self._toggle_selection(row)
             return "break"
 
@@ -395,14 +411,8 @@ class FileManagerMixin:
             return
 
         self.selection_states[iid] = not self.selection_states.get(iid, False)
-        self.files_tree.item(
-            iid,
-            image=(
-                self.checkbox_checked_image
-                if self.selection_states[iid]
-                else self.checkbox_unchecked_image
-            ),
-        )
+        self._manual_selection_overrides.add(iid)
+        self.files_tree.item(iid, image=(self.checkbox_checked_image if self.selection_states[iid] else self.checkbox_unchecked_image))
         self.update_selection_info()
 
     def update_selection_info(self):
@@ -422,6 +432,7 @@ class FileManagerMixin:
         """全选"""
         for iid in self.files_tree.get_children():
             self.selection_states[iid] = True
+            self._manual_selection_overrides.add(iid)
             self.files_tree.item(iid, image=self.checkbox_checked_image)
         self.update_selection_info()
 
@@ -429,6 +440,7 @@ class FileManagerMixin:
         """全不选"""
         for iid in self.files_tree.get_children():
             self.selection_states[iid] = False
+            self._manual_selection_overrides.add(iid)
             self.files_tree.item(iid, image=self.checkbox_unchecked_image)
         self.update_selection_info()
 
@@ -437,14 +449,8 @@ class FileManagerMixin:
         for iid in self.files_tree.get_children():
             cur = self.selection_states.get(iid, True)
             self.selection_states[iid] = not cur
-            self.files_tree.item(
-                iid,
-                image=(
-                    self.checkbox_checked_image
-                    if self.selection_states[iid]
-                    else self.checkbox_unchecked_image
-                ),
-            )
+            self._manual_selection_overrides.add(iid)
+            self.files_tree.item(iid, image=(self.checkbox_checked_image if self.selection_states[iid] else self.checkbox_unchecked_image))
         self.update_selection_info()
 
     def on_tree_double_click(self, event):

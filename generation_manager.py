@@ -10,7 +10,12 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 from tkinter import messagebox
 
-from audio_processor import _process_audio_chunk, build_output_path, find_existing_outputs_for_txt
+from audio_processor import (
+    _process_audio_chunk,
+    build_output_path,
+    find_existing_outputs_for_txt,
+    get_original_chapter_number,
+)
 from epub_processor import find_saved_epub_cover, find_saved_epub_metadata
 from models import TTSRequestStopped, TTSResult
 
@@ -545,9 +550,13 @@ class GenerationMixin:
 
     def generate_plain_files(self, files: List[str], txt_dir: str, out_dir: str):
         """普通模式：每个 TXT 直接输出一个 MP3，不做按目标时长拆分/合并"""
-        for track_number, f in enumerate(files, 1):
+        for f in files:
             if self.stop_flag:
                 break
+
+            # 普通模式的一章就是一个稳定音轨。序号必须继承 EPUB→TXT
+            # 阶段写入文件名的原始章节编号，不能按本次勾选列表重新计数。
+            original_chapter_number = get_original_chapter_number(f)
 
             existing_outputs = find_existing_outputs_for_txt(out_dir, f)
             if existing_outputs:
@@ -592,7 +601,7 @@ class GenerationMixin:
                 cover_path=self.current_cover_path,
                 book_metadata=self.current_book_metadata,
                 split_total=1,
-                track_number=track_number,
+                track_number=original_chapter_number,
             )
 
     def generate_smart_by_target(self, files: List[str], txt_dir: str, out_dir: str):

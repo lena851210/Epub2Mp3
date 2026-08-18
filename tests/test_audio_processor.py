@@ -10,6 +10,7 @@ from audio_processor import (
     build_output_path,
     embed_cover_art,
     embed_mp3_metadata,
+    get_original_chapter_number,
 )
 from models import TTSResult
 
@@ -61,7 +62,34 @@ class AudioProcessorTests(unittest.TestCase):
             self.assertFalse(result)
             self.assertEqual(mp3_path.read_bytes(), b"original-audio")
 
-    def test_audio_metadata_uses_sequential_track_titles(self):
+    def test_original_chapter_number_comes_from_txt_filename(self):
+        cases = {
+            "001 前言.txt": 1,
+            "003 第一章.txt": 3,
+            "037 某章节.txt": 37,
+            "054-第五十四章.txt": 54,
+            "普通章节.txt": None,
+        }
+
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(get_original_chapter_number(filename), expected)
+
+    def test_plain_output_filename_keeps_txt_original_number(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            cases = {
+                "001 前言.txt": "001 前言.mp3",
+                "003 第一章.txt": "003 第一章.mp3",
+                "037 某章节.txt": "037 某章节.mp3",
+                "054 失败后重试.txt": "054 失败后重试.mp3",
+            }
+
+            for txt_filename, expected_mp3 in cases.items():
+                with self.subTest(txt_filename=txt_filename):
+                    output = build_output_path(out_dir, [txt_filename], part_num=1)
+                    self.assertEqual(Path(output).name, expected_mp3)
+
+    def test_audio_metadata_uses_explicit_track_titles(self):
         single = build_audio_metadata(
             {
                 "album": "马斯克逻辑",

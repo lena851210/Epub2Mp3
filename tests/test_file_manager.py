@@ -1,6 +1,12 @@
 import unittest
 
-from file_manager import display_task_progress, display_task_status, display_txt_name
+from file_manager import (
+    display_task_progress,
+    display_task_status,
+    display_txt_name,
+    is_selection_column_hit,
+    resolve_scanned_selection,
+)
 
 
 class FileManagerDisplayTests(unittest.TestCase):
@@ -21,6 +27,17 @@ class FileManagerDisplayTests(unittest.TestCase):
         self.assertEqual(display_task_status("失败：无法读取文件"), "❌ 生成失败")
         self.assertEqual(display_task_status("已中断"), "■ 已停止")
         self.assertEqual(display_task_status("等待合并（25 段）"), "等待处理")
+
+    def test_treeview_selection_column_accepts_tree_region_clicks(self):
+        self.assertTrue(is_selection_column_hit("tree", "#0"))
+        self.assertTrue(is_selection_column_hit("cell", "#0"))
+        self.assertFalse(is_selection_column_hit("cell", "#1"))
+        self.assertFalse(is_selection_column_hit("heading", "#0"))
+
+    def test_background_scan_does_not_override_manual_selection(self):
+        self.assertFalse(resolve_scanned_selection(False, True, user_overridden=True))
+        self.assertTrue(resolve_scanned_selection(True, False, user_overridden=True))
+        self.assertTrue(resolve_scanned_selection(False, True, user_overridden=False))
 
 
 if __name__ == "__main__":

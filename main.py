@@ -43,47 +43,6 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
     """有声书生成工具 - 主应用类"""
 
     @staticmethod
-    def _create_checkbox_image(root, checked: bool):
-        """创建随 Treeview 行滚动的系统风格 checkbox 图标。"""
-        size = 18
-        image = tk.PhotoImage(master=root, width=size, height=size)
-        image.blank()
-
-        def inside_rounded_rect(x, y, inset, radius):
-            left = top = inset
-            right = bottom = size - 1 - inset
-            nearest_x = min(max(x, left + radius), right - radius)
-            nearest_y = min(max(y, top + radius), bottom - radius)
-            return (
-                left <= x <= right
-                and top <= y <= bottom
-                and (x - nearest_x) ** 2 + (y - nearest_y) ** 2 <= radius ** 2
-            )
-
-        for y in range(size):
-            for x in range(size):
-                if checked and inside_rounded_rect(x, y, 1, 4):
-                    image.put("#0A84FF", (x, y))
-                elif not checked and inside_rounded_rect(x, y, 2, 3):
-                    color = "#FFFFFF" if inside_rounded_rect(x, y, 3, 2) else "#8E8E93"
-                    image.put(color, (x, y))
-
-        if checked:
-            # 以两段粗线绘制白色 checkmark，尺寸接近 macOS 原生 checkbox。
-            segments = ((4.7, 9.2, 7.7, 12.1), (7.5, 12.0, 13.6, 5.8))
-            for y in range(size):
-                for x in range(size):
-                    for x1, y1, x2, y2 in segments:
-                        dx, dy = x2 - x1, y2 - y1
-                        length_sq = dx * dx + dy * dy
-                        t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
-                        px, py = x1 + t * dx, y1 + t * dy
-                        if (x - px) ** 2 + (y - py) ** 2 <= 1.15 ** 2:
-                            image.put("#FFFFFF", (x, y))
-                            break
-        return image
-
-    @staticmethod
     def _create_root_window():
         """创建主窗口；拖放扩展异常时保证 App 仍能启动。"""
         if TkinterDnD is not None:
@@ -255,8 +214,14 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
 
         columns = ("name", "est", "size", "chars", "status", "progress")
         self.files_tree = ttk.Treeview(files_lf, columns=columns, show="tree headings")
-        self.checkbox_unchecked_image = self._create_checkbox_image(self.root, checked=False)
-        self.checkbox_checked_image = self._create_checkbox_image(self.root, checked=True)
+        self.checkbox_unchecked_image = tk.PhotoImage(
+            master=self.root,
+            file=os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "checkbox_unchecked.png"),
+        )
+        self.checkbox_checked_image = tk.PhotoImage(
+            master=self.root,
+            file=os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "checkbox_checked.png"),
+        )
         self.files_tree.heading("#0", text="选择", anchor="center")
         self.files_tree.heading("name", text="章节")
         self.files_tree.heading("est", text="预估时长")
