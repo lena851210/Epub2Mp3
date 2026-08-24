@@ -58,7 +58,7 @@ class AudiobookGenerator(FileManagerMixin, GenerationMixin):
         self.duration_estimator = DurationEstimator(BASE_WORDS_PER_MINUTE)
 
         self.root, self.drag_and_drop_available = self._create_root_window()
-        self.root.title("EPUB to MP3 - V2.0")
+        self.root.title("EPUB to MP3 - V2.1")
         self.root.geometry("960x680")
         self.root.minsize(720, 560)
         self.stop_flag = False

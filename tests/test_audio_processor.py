@@ -11,6 +11,8 @@ from audio_processor import (
     embed_cover_art,
     embed_mp3_metadata,
     get_original_chapter_number,
+    normalize_chinese_numbers_for_tts,
+    preprocess_text,
 )
 from models import TTSResult
 
@@ -24,6 +26,38 @@ class Value:
 
 
 class AudioProcessorTests(unittest.TestCase):
+    def test_chinese_number_normalization_uses_context(self):
+        source = (
+            "这件事发生在2000年前。公元2000年，他刚好20岁。"
+            "会议日期是2024年5月20日，共有2000人参加，完成度为10%，"
+            "相关内容见第2000章，测量结果是3.14米，背景始于20世纪。"
+        )
+
+        normalized = normalize_chinese_numbers_for_tts(source)
+
+        self.assertIn("两千年前", normalized)
+        self.assertIn("公元二零零零年", normalized)
+        self.assertIn("二十岁", normalized)
+        self.assertIn("二零二四年五月二十日", normalized)
+        self.assertIn("两千人", normalized)
+        self.assertIn("百分之十", normalized)
+        self.assertIn("第二千章", normalized)
+        self.assertIn("三点一四米", normalized)
+        self.assertIn("二十世纪", normalized)
+
+    def test_ambiguous_identifiers_are_left_unchanged(self):
+        source = "版本V2.1，编号2000，ISBN 978-7-111-12345-6。"
+
+        self.assertEqual(normalize_chinese_numbers_for_tts(source), source)
+
+    def test_number_normalization_only_changes_tts_chunks(self):
+        source = "公元2000年，距今已有2000年。"
+
+        chunks = preprocess_text(source)
+
+        self.assertEqual(source, "公元2000年，距今已有2000年。")
+        self.assertEqual(chunks, ["公元二零零零年，距今已有两千年。"])
+
     @patch("audio_processor.shutil.which", return_value="/usr/local/bin/ffmpeg")
     @patch("audio_processor.subprocess.run")
     def test_embed_cover_replaces_audio_only_after_success(self, run_mock, _which_mock):
