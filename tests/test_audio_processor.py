@@ -58,6 +58,45 @@ class AudioProcessorTests(unittest.TestCase):
         self.assertEqual(source, "公元2000年，距今已有2000年。")
         self.assertEqual(chunks, ["公元二零零零年，距今已有两千年。"])
 
+    def test_grouped_numbers_use_complete_cardinal_reading(self):
+        source = (
+            "模型使用2 800亿个参数，在25 000个处理器上训练。"
+            "一天有1 440分钟，一篇文章有5 000字，价格优势超过50 000倍。"
+        )
+
+        normalized = normalize_chinese_numbers_for_tts(source)
+
+        self.assertEqual(
+            normalized,
+            "模型使用两千八百亿个参数，在两万五千个处理器上训练。"
+            "一天有一千四百四十分钟，一篇文章有五千字，价格优势超过五万倍。",
+        )
+
+    def test_grouped_number_ranges_are_read_as_ranges(self):
+        source = "能力约为5 000~6 000倍，效率约为1 000～1 200倍。"
+
+        self.assertEqual(
+            normalize_chinese_numbers_for_tts(source),
+            "能力约为五千到六千倍，效率约为一千到一千两百倍。",
+        )
+
+    def test_common_thousands_separators_are_supported(self):
+        variants = ["1 000人", "1,000人", "1，000人", "1\u00a0000人", "1\u202f000人", "1\u2009000人"]
+
+        for source in variants:
+            with self.subTest(source=repr(source)):
+                self.assertEqual(normalize_chinese_numbers_for_tts(source), "一千人")
+
+    def test_ordinary_spaced_digits_are_not_joined(self):
+        source = "编号依次为1 2 3，版本V2.1。"
+
+        self.assertEqual(normalize_chinese_numbers_for_tts(source), source)
+
+    def test_hyphenated_product_model_is_not_converted_as_quantity(self):
+        source = "GPT-4参数文件与GPT-4模型保持原样。"
+
+        self.assertEqual(normalize_chinese_numbers_for_tts(source), source)
+
     @patch("audio_processor.shutil.which", return_value="/usr/local/bin/ffmpeg")
     @patch("audio_processor.subprocess.run")
     def test_embed_cover_replaces_audio_only_after_success(self, run_mock, _which_mock):

@@ -21,6 +21,18 @@ from models import sanitize_filename
 _CN_DIGITS = "零一二三四五六七八九"
 _CN_SMALL_UNITS = ("", "十", "百", "千")
 _CN_SECTION_UNITS = ("", "万", "亿", "万亿")
+_NUMBER_GROUPING_SEPARATOR_RE = re.compile(r"[,，\u00a0\u202f\u2009 ]+")
+
+
+def _collapse_grouped_arabic_numbers(text: str) -> str:
+    """移除明确的千位分隔符，例如 ``25 000``、``1,000``、``1 000``。"""
+    grouped_number = re.compile(
+        r"(?<![\d.])(\d{1,3}(?:(?:[,，\u00a0\u202f\u2009 ]+)\d{3})+)(?!\d)"
+    )
+    return grouped_number.sub(
+        lambda match: _NUMBER_GROUPING_SEPARATOR_RE.sub("", match.group(1)),
+        text,
+    )
 
 
 def _section_to_chinese(value: int, use_liang: bool = True) -> str:
@@ -111,7 +123,9 @@ def normalize_chinese_numbers_for_tts(text: str) -> str:
     if not text:
         return text or ""
 
-    normalized = text
+    # 电子书常用空格、窄空格或逗号分隔千位。必须先还原完整数字，
+    # 否则后续规则会把“1 000倍”误当成“1”和“000倍”分别朗读。
+    normalized = _collapse_grouped_arabic_numbers(text)
 
     def replace_year_distance(match: re.Match) -> str:
         # “公元2000年前”表示公元 2000 年以前，不是距今两千年前。
@@ -171,10 +185,31 @@ def normalize_chinese_numbers_for_tts(text: str) -> str:
 
     quantity_units = (
         "万亿元|亿元|万元|小时|分钟|公里|千米|厘米|毫米|公斤|千克|"
-        "美元|人民币|个人|本|章|节|部|卷|篇|回|页|次|岁|天|秒|米|克|吨|元|人|个"
+        "道尔顿|人民币|美元|参数|词元|个人|小时|分钟|公里|千米|厘米|毫米|公斤|千克|"
+        "本|章|节|部|卷|篇|回|页|次|岁|天|秒|米|克|吨|元|人|个|倍|字|词|块|名|场|组|台|件|份"
     )
+
+    # 数值范围共用同一个单位，例如“1 000~1 200倍”读“一千到一千二百倍”。
     normalized = re.sub(
-        rf"(?<![A-Za-z0-9_.])(\d+(?:\.\d+)?)\s*({quantity_units})",
+        rf"(?<![A-Za-z0-9_.-])(\d+(?:\.\d+)?)\s*[~～]\s*(\d+(?:\.\d+)?)\s*({quantity_units})",
+        lambda m: (
+            _number_token_to_chinese(m.group(1), use_liang=True)
+            + "到"
+            + _number_token_to_chinese(m.group(2), use_liang=True)
+            + m.group(3)
+        ),
+        normalized,
+    )
+
+    # “2800亿”“560万亿”等带中文数量级的表达使用数量读法。
+    normalized = re.sub(
+        r"(?<![A-Za-z0-9_.-])(\d+(?:\.\d+)?)\s*(万亿|亿|万)",
+        lambda m: _number_token_to_chinese(m.group(1), use_liang=True) + m.group(2),
+        normalized,
+    )
+
+    normalized = re.sub(
+        rf"(?<![A-Za-z0-9_.-])(\d+(?:\.\d+)?)\s*({quantity_units})",
         lambda m: _number_token_to_chinese(m.group(1), use_liang=True) + m.group(2),
         normalized,
     )
