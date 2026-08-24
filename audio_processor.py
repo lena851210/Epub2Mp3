@@ -18,6 +18,216 @@ from models import TTSResult
 from models import sanitize_filename
 
 
+_CN_DIGITS = "零一二三四五六七八九"
+_CN_SMALL_UNITS = ("", "十", "百", "千")
+_CN_SECTION_UNITS = ("", "万", "亿", "万亿")
+_NUMBER_GROUPING_SEPARATOR_RE = re.compile(r"[,，\u00a0\u202f\u2009 ]+")
+
+
+def _collapse_grouped_arabic_numbers(text: str) -> str:
+    """移除明确的千位分隔符，例如 ``25 000``、``1,000``、``1 000``。"""
+    grouped_number = re.compile(
+        r"(?<![\d.])(\d{1,3}(?:(?:[,，\u00a0\u202f\u2009 ]+)\d{3})+)(?!\d)"
+    )
+    return grouped_number.sub(
+        lambda match: _NUMBER_GROUPING_SEPARATOR_RE.sub("", match.group(1)),
+        text,
+    )
+
+
+def _section_to_chinese(value: int, use_liang: bool = True) -> str:
+    """把 0~9999 转成中文数量读法；只在百/千位使用“两”。"""
+    if value == 0:
+        return ""
+
+    result: List[str] = []
+    zero_pending = False
+    for position in range(3, -1, -1):
+        divisor = 10 ** position
+        digit = value // divisor % 10
+        if digit == 0:
+            if result:
+                zero_pending = True
+            continue
+
+        if zero_pending:
+            result.append("零")
+            zero_pending = False
+
+        digit_text = "两" if use_liang and digit == 2 and position >= 2 else _CN_DIGITS[digit]
+        result.append(digit_text + _CN_SMALL_UNITS[position])
+
+    return "".join(result)
+
+
+def _integer_to_chinese(value: int, use_liang: bool = True) -> str:
+    """把常见非负整数转成中文数量读法，超大数字保守地逐位读取。"""
+    if value == 0:
+        return "零"
+    if value < 0:
+        return "负" + _integer_to_chinese(abs(value), use_liang=use_liang)
+
+    sections: List[int] = []
+    remaining = value
+    while remaining:
+        sections.append(remaining % 10000)
+        remaining //= 10000
+
+    if len(sections) > len(_CN_SECTION_UNITS):
+        return "".join(_CN_DIGITS[int(ch)] for ch in str(value))
+
+    result: List[str] = []
+    zero_between = False
+    for section_index in range(len(sections) - 1, -1, -1):
+        section = sections[section_index]
+        if section == 0:
+            if result:
+                zero_between = True
+            continue
+
+        if result and (zero_between or section < 1000):
+            result.append("零")
+
+        if use_liang and section == 2 and section_index > 0:
+            section_text = "两"
+        else:
+            section_text = _section_to_chinese(section, use_liang=use_liang)
+        result.append(section_text + _CN_SECTION_UNITS[section_index])
+        zero_between = False
+
+    text = "".join(result)
+    if text.startswith("一十"):
+        text = text[1:]
+    return text
+
+
+def _number_token_to_chinese(token: str, use_liang: bool = True) -> str:
+    """转换整数或小数；小数点后的数字始终逐位读取。"""
+    clean = (token or "").strip()
+    if "." in clean:
+        integer_part, decimal_part = clean.split(".", 1)
+        integer_text = _integer_to_chinese(int(integer_part or "0"), use_liang=use_liang)
+        decimal_text = "".join(_CN_DIGITS[int(ch)] for ch in decimal_part)
+        return f"{integer_text}点{decimal_text}"
+    return _integer_to_chinese(int(clean), use_liang=use_liang)
+
+
+def normalize_chinese_numbers_for_tts(text: str) -> str:
+    """
+    对送入 TTS 的文本做保守的中文数字语境规范化。
+
+    这里只处理语义较明确的年份、日期、时长、百分比、章节序号、
+    常见数量单位和独立小数。普通编号、ISBN、版本号等保持原文，
+    避免为了朗读自然度改坏原始含义。TXT 文件本身不会被修改。
+    """
+    if not text:
+        return text or ""
+
+    # 电子书常用空格、窄空格或逗号分隔千位。必须先还原完整数字，
+    # 否则后续规则会把“1 000倍”误当成“1”和“000倍”分别朗读。
+    normalized = _collapse_grouped_arabic_numbers(text)
+
+    def replace_year_distance(match: re.Match) -> str:
+        # “公元2000年前”表示公元 2000 年以前，不是距今两千年前。
+        prefix = normalized[max(0, match.start() - 2):match.start()]
+        if prefix in {"公元", "西元"}:
+            return match.group(0)
+        amount = _number_token_to_chinese(match.group(1), use_liang=True)
+        return f"{amount}年{match.group(2)}"
+
+    normalized = re.sub(r"(?<!\d)(\d{1,12})\s*年([前后])", replace_year_distance, normalized)
+
+    # 明确描述时间长度的上下文使用数量读法，例如“距今已有两千年”。
+    duration_prefixes = "距今已有|距今约有|距今大约|历时|持续|长达|已有|经过|相隔"
+    normalized = re.sub(
+        rf"({duration_prefixes})(\d{{1,12}})\s*年",
+        lambda m: m.group(1) + _number_token_to_chinese(m.group(2), use_liang=True) + "年",
+        normalized,
+    )
+
+    # 四位公历年份按数字逐位读，例如 2000 年读“二零零零年”。
+    normalized = re.sub(
+        r"(?<!\d)(\d{4})年",
+        lambda m: "".join(_CN_DIGITS[int(ch)] for ch in m.group(1)) + "年",
+        normalized,
+    )
+
+    # 月日属于数量读法，年份已经在上一步处理。
+    normalized = re.sub(
+        r"(?<!\d)(\d{1,2})月(\d{1,2})(日|号)",
+        lambda m: (
+            _number_token_to_chinese(m.group(1), use_liang=False)
+            + "月"
+            + _number_token_to_chinese(m.group(2), use_liang=False)
+            + m.group(3)
+        ),
+        normalized,
+    )
+
+    normalized = re.sub(
+        r"(?<![\d.])(\d+(?:\.\d+)?)\s*[%％]",
+        lambda m: "百分之" + _number_token_to_chinese(m.group(1), use_liang=False),
+        normalized,
+    )
+
+    normalized = re.sub(
+        r"第(\d{1,12})(章|节|回|卷|篇|部)",
+        lambda m: "第" + _number_token_to_chinese(m.group(1), use_liang=False) + m.group(2),
+        normalized,
+    )
+
+    # “20世纪”表示序数概念，应读“二十世纪”，不能使用数量词“两”。
+    normalized = re.sub(
+        r"(?<!\d)(\d{1,3})世纪",
+        lambda m: _number_token_to_chinese(m.group(1), use_liang=False) + "世纪",
+        normalized,
+    )
+
+    quantity_units = (
+        "万亿元|亿元|万元|小时|分钟|公里|千米|厘米|毫米|公斤|千克|"
+        "道尔顿|人民币|美元|参数|词元|个人|小时|分钟|公里|千米|厘米|毫米|公斤|千克|"
+        "本|章|节|部|卷|篇|回|页|次|岁|天|秒|米|克|吨|元|人|个|倍|字|词|块|名|场|组|台|件|份"
+    )
+
+    # 数值范围共用同一个单位，例如“1 000~1 200倍”读“一千到一千二百倍”。
+    normalized = re.sub(
+        rf"(?<![A-Za-z0-9_.-])(\d+(?:\.\d+)?)\s*[~～]\s*(\d+(?:\.\d+)?)\s*({quantity_units})",
+        lambda m: (
+            _number_token_to_chinese(m.group(1), use_liang=True)
+            + "到"
+            + _number_token_to_chinese(m.group(2), use_liang=True)
+            + m.group(3)
+        ),
+        normalized,
+    )
+
+    # “2800亿”“560万亿”等带中文数量级的表达使用数量读法。
+    normalized = re.sub(
+        r"(?<![A-Za-z0-9_.-])(\d+(?:\.\d+)?)\s*(万亿|亿|万)",
+        lambda m: _number_token_to_chinese(m.group(1), use_liang=True) + m.group(2),
+        normalized,
+    )
+
+    normalized = re.sub(
+        rf"(?<![A-Za-z0-9_.-])(\d+(?:\.\d+)?)\s*({quantity_units})",
+        lambda m: _number_token_to_chinese(m.group(1), use_liang=True) + m.group(2),
+        normalized,
+    )
+
+    # 独立小数可安全读成“点”；版本号 V2.1 和多段 IP 地址不会命中。
+    normalized = re.sub(
+        r"(?<![A-Za-z0-9_.])(\d+)\.(\d+)(?![A-Za-z0-9_.])",
+        lambda m: (
+            _number_token_to_chinese(m.group(1), use_liang=True)
+            + "点"
+            + "".join(_CN_DIGITS[int(ch)] for ch in m.group(2))
+        ),
+        normalized,
+    )
+
+    return normalized
+
+
 def _parse_num_and_title(stem: str) -> Tuple[Optional[int], str]:
     """
     从类似 '001-第一章' / '001 第一章' 解析出 (1, '第一章')
@@ -166,6 +376,7 @@ def preprocess_text(text: str, max_length: int = 500) -> List[str]:
 
     t = text.replace("\r\n", "\n").replace("\r", "\n")
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    t = normalize_chinese_numbers_for_tts(t)
 
     heading_re = re.compile(
         r"^(第[0-9一二三四五六七八九十百千万零〇两]+[章节回卷篇部].{0,30}|Chapter\s+\d+.*|CHAPTER\s+\d+.*)$",
